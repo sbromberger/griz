@@ -481,3 +481,23 @@ func TestOneServerWhateverTMPDIR(t *testing.T) {
 		t.Errorf("want one server, got pids %q", out)
 	}
 }
+
+// A session that carries on with a new server already has the pinned
+// memories, so the new server doesn't send them again.
+func TestResumedSessionKeepsPinned(t *testing.T) {
+	e := newEnv(t, noScan)
+	a := e.session()
+	if out, bad := a.tool("store", map[string]any{"id": "notes/pinned", "body": "a pinned fact", "pin": true}); bad || !strings.HasPrefix(out, "ok") {
+		t.Fatalf("store: %q", out)
+	}
+	b := e.session()
+	if out, _ := b.tool("recall", map[string]any{"q": "anything"}); !strings.Contains(out, "pinned memories, sent once") {
+		t.Fatalf("a new session's first reply carries the pinned memories: %q", out)
+	}
+	if out, err := e.cli("mcp", "restart"); err != nil {
+		t.Fatalf("restart: %v %s", err, out)
+	}
+	if out, bad := b.tool("recall", map[string]any{"q": "pinned fact"}); bad || strings.Contains(out, "pinned memories, sent once") || !strings.Contains(out, "notes/pinned") {
+		t.Errorf("after a restart the session carries on without a second copy: %v %q", bad, out)
+	}
+}

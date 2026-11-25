@@ -360,6 +360,9 @@ func (s *Server) serveMCP(c *conn, br *bufio.Reader, client string) {
 	}
 	sess := s.A.NewSession()
 	sess.Client = client
+	if resumed {
+		s.A.MarkPinnedSent(sess) // it had them from an earlier server
+	}
 	defer s.A.EndSession(sess)
 	t := &countingTransport{inner: &mcp.IOTransport{Reader: readCloser{in, c}, Writer: c}, c: c}
 	ctx, cancel := context.WithCancel(context.Background())

@@ -74,6 +74,29 @@ func (e *env) cli(args ...string) (string, error) {
 	return string(out), err
 }
 
+// servers lists the processes holding this env's server lock.
+func (e *env) servers() []string {
+	out, _ := exec.Command("lsof", "-t", filepath.Join(e.tmp, "s", "griz", "server", "server.lock")).Output()
+	return strings.Fields(string(out))
+}
+
+// TestProcessNames: relays and servers show their role in ps.
+func TestProcessNames(t *testing.T) {
+	e := newEnv(t, noScan)
+	a := e.session()
+	a.tool("recall", map[string]any{"q": "x"})
+	name := func(pid string) string {
+		out, _ := exec.Command("ps", "-o", "command=", "-p", pid).Output()
+		return strings.TrimSpace(string(out))
+	}
+	if got := name(strconv.Itoa(a.cmd.Process.Pid)); got != "griz (relay)" {
+		t.Errorf("relay shows as %q", got)
+	}
+	if pids := e.servers(); len(pids) != 1 || name(pids[0]) != "griz (server)" {
+		t.Errorf("server: %v %q", pids, name(pids[0]))
+	}
+}
+
 var pidRE = regexp.MustCompile(`server: pid (\d+)`)
 
 // serverPID asks the running server for its pid (0 if none).
@@ -312,9 +335,8 @@ func TestOneServerForConcurrentStarts(t *testing.T) {
 	for range ss {
 		<-done
 	}
-	out, _ := exec.Command("pgrep", "-f", e.bin+" serve").Output()
-	if n := len(strings.Fields(string(out))); n != 1 {
-		t.Errorf("want one server, found %d: %q", n, out)
+	if pids := e.servers(); len(pids) != 1 {
+		t.Errorf("want one server, found %v", pids)
 	}
 }
 
@@ -477,8 +499,8 @@ func TestOneServerWhateverTMPDIR(t *testing.T) {
 	if st, _ := e.cli("status"); !strings.Contains(st, "2 clients connected") && !strings.Contains(st, "3 clients connected") {
 		t.Errorf("a relay without TMPDIR should join the same server: %s", st)
 	}
-	if out, _ := exec.Command("pgrep", "-f", e.bin+" serve").Output(); len(strings.Fields(string(out))) != 1 {
-		t.Errorf("want one server, got pids %q", out)
+	if pids := e.servers(); len(pids) != 1 {
+		t.Errorf("want one server, got pids %v", pids)
 	}
 }
 

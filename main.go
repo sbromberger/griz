@@ -172,6 +172,12 @@ func lookup(args []string) (*command, []string, error) {
 
 func main() {
 	server.Version = version
+	switch os.Args[0] { // started under a role's name (see runRelay)
+	case daemon.RelayName:
+		exit(runRelay())
+	case daemon.ServerName:
+		exit(runServe())
+	}
 	args := os.Args[1:]
 	if len(args) == 0 {
 		fmt.Fprint(errOut, usage())
@@ -363,6 +369,14 @@ func client() (*daemon.Client, error) {
 
 // runRelay is griz mcp: a thin stdio relay to the shared server.
 func runRelay() error {
+	if os.Args[0] != daemon.RelayName {
+		// Show as "griz (relay)" in ps: exec this binary again under that
+		// name, before reading anything. Same pid and pipes; if the exec
+		// fails, relay as we are.
+		if exe, err := os.Executable(); err == nil {
+			syscall.Exec(exe, []string{daemon.RelayName}, os.Environ())
+		}
+	}
 	cl, err := client()
 	if err != nil {
 		return err
@@ -477,4 +491,13 @@ func runStatus([]string) error {
 	}
 	fmt.Fprintln(out, a.Report())
 	return nil
+}
+
+// exit ends a role started by name, reporting its error like main does.
+func exit(err error) {
+	if err != nil {
+		fmt.Fprintln(errOut, "griz:", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }

@@ -71,7 +71,8 @@ func (cl *Client) dial(mode string, start bool) (*serverConn, error) {
 		}
 		if spawned == nil && start && !errors.As(err, &stale) {
 			spawned = exec.Command(exe)
-			spawned.Args = []string{ServerName}
+			spawned.Args = []string{"griz"}
+			spawned.Env = append(os.Environ(), ServeEnv+"=1")
 			spawned.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 			if err := spawned.Start(); err != nil {
 				return nil, fmt.Errorf("starting griz server: %v", err)

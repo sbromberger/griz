@@ -102,11 +102,12 @@ func readLine(r *bufio.Reader, max int) ([]byte, error) {
 // Code with it, and they must reach the same server.
 func socketDir(state string) string { return filepath.Join(state, "server") }
 
-// RelayName and ServerName are the names relays and servers show in ps
-// (their argv[0]); a process started under one of them is that role.
+// RelayName is the name relays show in ps (their argv[0]); a process
+// started under it is a relay. A server started by a relay shows as plain
+// "griz" and is marked by ServeEnv=1 instead, since a bare griz prints usage.
 const (
-	RelayName  = "griz (relay)"
-	ServerName = "griz (server)"
+	RelayName = "griz (relay)"
+	ServeEnv  = "GRIZ_SERVE"
 )
 
 func socketPath(state string) string { return filepath.Join(socketDir(state), "griz.sock") }

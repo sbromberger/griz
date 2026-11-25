@@ -37,12 +37,14 @@ type App struct {
 	embedWG  sync.WaitGroup // embedding started by store or scan
 	slots    chan struct{}  // one per chunk being embedded (see vectors.go)
 	Local    *Session       // the session used without a server
-	// StatusExtra adds lines to Report (the server: sessions, crashes).
-	StatusExtra func() []string
-	sess        sessions
-	ops         opLog
-	started     time.Time
-	lastScan    scanReport
+	// Processes describes griz's processes for Report.
+	Processes func() Procs
+	// Server is set on the shared server's App: Report then describes the
+	// server, not the CLI process asking.
+	Server   bool
+	sess     sessions
+	ops      opLog
+	lastScan scanReport
 
 	mu       sync.Mutex // guards head, stamps and pinIDs
 	head     string
@@ -82,7 +84,6 @@ func Open(cfg *config.Config) (*App, error) {
 			WNS: cfg.Index.WeightNamespace, WTags: cfg.Index.WeightTags, WBody: cfg.Index.WeightBody}),
 		Usage:    usage.New(cfg.StateDir, cfg.Log.Usage),
 		maxWords: cfg.Index.ChunkWords,
-		started:  time.Now(),
 		slots:    make(chan struct{}, cfg.Search.Workers()),
 		Local:    &Session{Since: time.Now()},
 	}

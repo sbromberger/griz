@@ -58,17 +58,17 @@ func TestCLI(t *testing.T) {
 	if out := must("recall", "walrus"); strings.Contains(out, "griz debug") {
 		t.Errorf("debug off: %q", out)
 	}
-	if out := must("version"); !strings.Contains(out, "server: pid") || strings.Count(out, "griz "+strings.Fields(out)[1]) != 2 {
+	if out := must("version"); !strings.Contains(out, "server  pid") || strings.Count(out, "griz "+strings.Fields(out)[1]) != 2 {
 		t.Errorf("version should show the server: %q", out)
 	}
 	pid := e.serverPID()
-	if out := must("mcp", "restart"); !strings.Contains(out, "server: pid") || e.serverPID() == pid {
+	if out := must("mcp", "restart"); !strings.Contains(out, "server  pid") || e.serverPID() == pid {
 		t.Errorf("restart should bring up a new server: %q", out)
 	}
 	if out := must("mcp", "stop"); !strings.Contains(out, "stopped griz server") || e.serverPID() != 0 {
 		t.Errorf("stop: %q", out)
 	}
-	if out := must("mcp", "status"); !strings.Contains(out, "no griz server running") {
+	if out := must("mcp", "status"); !strings.Contains(out, "server  not running") {
 		t.Errorf("status with none: %q", out)
 	}
 	if out := must("get", "walrus"); !strings.Contains(out, "snails") {

@@ -92,12 +92,12 @@ func TestProcessNames(t *testing.T) {
 	if got := name(strconv.Itoa(a.cmd.Process.Pid)); got != "griz (relay)" {
 		t.Errorf("relay shows as %q", got)
 	}
-	if pids := e.servers(); len(pids) != 1 || name(pids[0]) != "griz (server)" {
+	if pids := e.servers(); len(pids) != 1 || name(pids[0]) != "griz" {
 		t.Errorf("server: %v %q", pids, name(pids[0]))
 	}
 }
 
-var pidRE = regexp.MustCompile(`server: pid (\d+)`)
+var pidRE = regexp.MustCompile(`server +pid (\d+)`)
 
 // serverPID asks the running server for its pid (0 if none).
 func (e *env) serverPID() int {
@@ -194,10 +194,10 @@ func TestSharedServer(t *testing.T) {
 		t.Errorf("the other session should see the store at once: %q", out)
 	}
 	st, _ := e.cli("status")
-	if !strings.Contains(st, "2 clients connected") && !strings.Contains(st, "3 clients connected") {
+	if strings.Count(st, "relay   pid") != 2 {
 		t.Errorf("status should count both sessions: %q", st)
 	}
-	if !strings.Contains(st, "relay pid") {
+	if !strings.Contains(st, "relay   pid") {
 		t.Errorf("status should show each session's relay: %q", st)
 	}
 	// CLI writes go through the server.
@@ -496,7 +496,7 @@ func TestOneServerWhateverTMPDIR(t *testing.T) {
 	e.vars = vars
 	b := e.session()
 	b.tool("recall", map[string]any{"q": "x"})
-	if st, _ := e.cli("status"); !strings.Contains(st, "2 clients connected") && !strings.Contains(st, "3 clients connected") {
+	if st, _ := e.cli("status"); strings.Count(st, "relay   pid") != 2 {
 		t.Errorf("a relay without TMPDIR should join the same server: %s", st)
 	}
 	if pids := e.servers(); len(pids) != 1 {

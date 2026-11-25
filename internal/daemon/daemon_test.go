@@ -42,7 +42,7 @@ func testServer(t *testing.T) *Server {
 	}
 	a.Stderr = io.Discard
 	s := &Server{A: a, Version: "test", StateDir: cfg.StateDir, Check: CheckClient,
-		RunCLI: func(args []string, out io.Writer) error {
+		RunCLI: func(args []string, _ int, out io.Writer) error {
 			io.WriteString(out, "ran "+strings.Join(args, " "))
 			return nil
 		}}

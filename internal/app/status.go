@@ -27,6 +27,11 @@ func (a *App) Report() string {
 	var b strings.Builder
 	line := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
 
+	// Processes.
+	if a.Processes != nil {
+		line("%s", a.Processes().Format(a.Server))
+	}
+
 	// Memories.
 	mems, bad, _ := a.Repo.LoadAll()
 	today := memory.Today()
@@ -124,12 +129,8 @@ func (a *App) Report() string {
 	if st, err := os.Stat(filepath.Join(a.Cfg.StateDir, "vectors.bin")); err == nil {
 		vsize = fmt.Sprintf("%.1f MB", float64(st.Size())/(1<<20))
 	}
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	rss := PeakRSS()
-	line("sizes: vectors.bin %s; this process: Go heap %s, peak resident %s (the model's mapped weights are shared)",
-		vsize, mb(int64(ms.HeapAlloc)), mb(rss))
-	line("uptime: %s (pid %d); debug mode %s", time.Since(a.started).Round(time.Second), os.Getpid(), onOff(a.Debugging()))
+	line("sizes: vectors.bin %s", vsize)
+	line("debug mode: %s", onOff(a.Debugging()))
 
 	// Warnings.
 	all := a.current()
@@ -143,11 +144,6 @@ func (a *App) Report() string {
 	}
 
 	// Server, sessions and crashes (set by the server, or by the CLI).
-	if a.StatusExtra != nil {
-		for _, l := range a.StatusExtra() {
-			line("%s", l)
-		}
-	}
 
 	// Settings.
 	if diff := configDiff(a.Cfg); len(diff) > 0 {
@@ -413,4 +409,43 @@ func topFunctions(p *profile.Profile, wall time.Duration) string {
 			100*float64(cum[n])/float64(total), n)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// Procs describes griz's processes for status: the server ("" if none is
+// running), each session's relay, and the command asking.
+type Procs struct {
+	Server  string
+	Relays  []string
+	Cmd     string
+	Crashes string // crash reports since last shown, if any
+}
+
+// Format lists the processes. The memory figures are this process's, so
+// they go with the server when it is the one answering, else with the
+// command.
+func (p Procs) Format(inServer bool) string {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	mem := fmt.Sprintf("          Go heap %s, peak resident %s (the model's mapped weights are shared)", mb(int64(ms.HeapAlloc)), mb(PeakRSS()))
+	server := p.Server
+	if server == "" {
+		server = "not running"
+	}
+	lines := []string{"processes:", "  server  " + server}
+	if inServer {
+		lines = append(lines, mem)
+	}
+	for _, r := range p.Relays {
+		lines = append(lines, "  relay   "+r)
+	}
+	if p.Cmd != "" {
+		lines = append(lines, "  cmd     "+p.Cmd)
+		if !inServer {
+			lines = append(lines, mem)
+		}
+	}
+	if p.Crashes != "" {
+		lines = append(lines, p.Crashes)
+	}
+	return strings.Join(lines, "\n")
 }

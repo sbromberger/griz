@@ -35,9 +35,10 @@ type Server struct {
 	IdleExit time.Duration // exit after this long with no connections; 0 = never
 	// DrainWait is how long stopping waits for calls in progress; 0 = no limit.
 	DrainWait time.Duration
-	// RunCLI runs a CLI command inside the server, writing its output to out.
+	// RunCLI runs a CLI command inside the server, writing its output to
+	// out. pid is the griz command that asked.
 	// Calls are serialized.
-	RunCLI func(args []string, out io.Writer) error
+	RunCLI func(args []string, pid int, out io.Writer) error
 	// Check, if set, vets each connection before the hello (peer checks).
 	Check func(c *net.UnixConn) error
 
@@ -143,21 +144,19 @@ func (s *Server) Serve(ctx context.Context) error {
 	return nil
 }
 
-// Status describes the server for griz status: pid, uptime, connected
-// sessions, and crashes since they were last shown.
-func (s *Server) Status(stateDir string) []string {
-	s.mu.Lock()
-	n := len(s.conns)
-	s.mu.Unlock()
-	lines := []string{fmt.Sprintf("server: pid %d, griz %s, up %s, %d %s connected (exits after %s with none)",
-		os.Getpid(), s.Version, time.Since(s.started).Round(time.Second), n, plural(n, "client", "clients"), s.IdleExit)}
+// Status describes the server and each session's relay for griz status,
+// and any crashes since they were last shown.
+func (s *Server) Status(stateDir string) (server string, relays []string, crashes string) {
+	exits := fmt.Sprintf("exits after %s with no sessions", s.IdleExit)
+	if s.IdleExit <= 0 {
+		exits = "never exits on its own"
+	}
+	server = fmt.Sprintf("pid %d, griz %s, up %s, %s", os.Getpid(), s.Version, time.Since(s.started).Round(time.Second), exits)
 	for _, ss := range s.A.Sessions() {
-		lines = append(lines, fmt.Sprintf("  session %d: %s, connected %s ago, debug %s", ss.ID, ss.Client, time.Since(ss.Since).Round(time.Second), onOff(ss.Debugging())))
+		relays = append(relays, fmt.Sprintf("%s, session %d, connected %s ago, debug %s",
+			ss.Client, ss.ID, time.Since(ss.Since).Round(time.Second), onOff(ss.Debugging())))
 	}
-	if c := CrashReport(stateDir); c != "" {
-		lines = append(lines, c)
-	}
-	return lines
+	return server, relays, CrashReport(stateDir)
 }
 
 func plural(n int, one, many string) string {
@@ -256,9 +255,9 @@ func (s *Server) handle(uc *net.UnixConn) {
 	}
 	switch hello.Mode {
 	case "mcp":
-		s.serveMCP(c, br, fmt.Sprintf("relay pid %d", hello.PID))
+		s.serveMCP(c, br, fmt.Sprintf("pid %d", hello.PID))
 	case "cli":
-		s.serveCLI(c, br)
+		s.serveCLI(c, br, hello.PID)
 	}
 }
 
@@ -448,7 +447,7 @@ func (cc *countingConn) Write(ctx context.Context, msg jsonrpc.Message) error {
 }
 
 // serveCLI runs one CLI command and streams its output.
-func (s *Server) serveCLI(c *conn, br *bufio.Reader) {
+func (s *Server) serveCLI(c *conn, br *bufio.Reader, pid int) {
 	line, err := readLine(br, maxControl)
 	if err != nil {
 		return
@@ -470,7 +469,7 @@ func (s *Server) serveCLI(c *conn, br *bufio.Reader) {
 	defer s.cliMu.Unlock()
 	c.pending.Add(1)
 	defer c.pending.Add(-1)
-	if err := s.RunCLI(m.Args, msgWriter{c}); err != nil {
+	if err := s.RunCLI(m.Args, pid, msgWriter{c}); err != nil {
 		writeMsg(c, msg{Griz: "done", Error: err.Error()})
 		return
 	}

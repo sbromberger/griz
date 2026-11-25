@@ -40,8 +40,10 @@ func buildVersion() string {
 var (
 	out    io.Writer = os.Stdout
 	errOut io.Writer = os.Stderr
-	// srvApp is the server's App while a command runs inside the server.
-	srvApp *app.App
+	// srvApp is the server's App while a command runs inside the server,
+	// and cmdLine describes the griz command that asked.
+	srvApp  *app.App
+	cmdLine string
 )
 
 // Where a command runs.
@@ -172,11 +174,12 @@ func lookup(args []string) (*command, []string, error) {
 
 func main() {
 	server.Version = version
-	switch os.Args[0] { // started under a role's name (see runRelay)
-	case daemon.RelayName:
-		exit(runRelay())
-	case daemon.ServerName:
+	if os.Getenv(daemon.ServeEnv) == "1" { // a server started by a relay
+		os.Unsetenv(daemon.ServeEnv) // not for git or anything else it runs
 		exit(runServe())
+	}
+	if os.Args[0] == daemon.RelayName { // see runRelay
+		exit(runRelay())
 	}
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -227,14 +230,14 @@ func dispatch(c *command, args []string) error {
 
 // runInServer runs a CLI command inside the server (one at a time). In
 // debug mode it adds where the time went.
-func runInServer(a *app.App) func(args []string, w io.Writer) error {
-	return func(args []string, w io.Writer) error {
+func runInServer(a *app.App) func(args []string, pid int, w io.Writer) error {
+	return func(args []string, pid int, w io.Writer) error {
 		c := find(args[0])
 		if c == nil || c.where == local {
 			return fmt.Errorf("griz %s doesn't run in the server", args[0])
 		}
-		out, errOut, srvApp = w, w, a
-		defer func() { out, errOut, srvApp = os.Stdout, os.Stderr, nil }()
+		out, errOut, srvApp, cmdLine = w, w, a, fmt.Sprintf("pid %d (griz %s)", pid, c.name)
+		defer func() { out, errOut, srvApp, cmdLine = os.Stdout, os.Stderr, nil, "" }()
 		start := time.Now()
 		err := c.run(args[1:])
 		if a.Debugging() {
@@ -424,8 +427,12 @@ func runServe() error {
 		return err
 	}
 	srv.A = a
+	a.Server = true
 	srv.RunCLI = runInServer(a)
-	a.StatusExtra = func() []string { return srv.Status(cfg.StateDir) }
+	a.Processes = func() app.Procs {
+		server, relays, crashes := srv.Status(cfg.StateDir)
+		return app.Procs{Server: server, Relays: relays, Cmd: cmdLine, Crashes: crashes}
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	a.StartScanner(ctx.Done())
@@ -461,13 +468,11 @@ func runMCPRestart([]string) error {
 }
 
 func runMCPStatus([]string) error {
-	if srvApp == nil || srvApp.StatusExtra == nil {
-		fmt.Fprintln(out, "no griz server running")
+	if srvApp != nil && srvApp.Processes != nil {
+		fmt.Fprintln(out, srvApp.Processes().Format(true))
 		return nil
 	}
-	for _, l := range srvApp.StatusExtra() {
-		fmt.Fprintln(out, l)
-	}
+	fmt.Fprintln(out, app.Procs{Cmd: fmt.Sprintf("pid %d (griz mcp status)", os.Getpid())}.Format(false))
 	return nil
 }
 
@@ -476,17 +481,13 @@ func runStatus([]string) error {
 	if err != nil {
 		return err
 	}
-	if a.StatusExtra == nil { // no server: compute the pin warnings here, and still report crashes
-		fmt.Fprintln(out, "server: not running")
+	if a.Processes == nil { // no server: compute the pin warnings here, and still report crashes
 		a.Stderr = io.Discard // they are listed in the report
 		if err := a.RefreshPinWarnings(); err != nil {
 			return err
 		}
-		a.StatusExtra = func() []string {
-			if c := daemon.CrashReport(a.Cfg.StateDir); c != "" {
-				return []string{c}
-			}
-			return nil
+		a.Processes = func() app.Procs {
+			return app.Procs{Cmd: fmt.Sprintf("pid %d (griz status)", os.Getpid()), Crashes: daemon.CrashReport(a.Cfg.StateDir)}
 		}
 	}
 	fmt.Fprintln(out, a.Report())

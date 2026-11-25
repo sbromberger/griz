@@ -174,8 +174,8 @@ func TestSharedServer(t *testing.T) {
 	if !strings.Contains(st, "2 clients connected") && !strings.Contains(st, "3 clients connected") {
 		t.Errorf("status should count both sessions: %q", st)
 	}
-	if !strings.Contains(st, "relay pid") || strings.Contains(st, "different griz") {
-		t.Errorf("status should show each relay's version, the same as the server's: %q", st)
+	if !strings.Contains(st, "relay pid") {
+		t.Errorf("status should show each session's relay: %q", st)
 	}
 	// CLI writes go through the server.
 	if out, err := e.cli("memory", "archive", "notes/shared"); err != nil {

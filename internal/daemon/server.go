@@ -151,16 +151,8 @@ func (s *Server) Status(stateDir string) []string {
 	s.mu.Unlock()
 	lines := []string{fmt.Sprintf("server: pid %d, griz %s, up %s, %d %s connected (exits after %s with none)",
 		os.Getpid(), s.Version, time.Since(s.started).Round(time.Second), n, plural(n, "client", "clients"), s.IdleExit)}
-	older := 0
 	for _, ss := range s.A.Sessions() {
 		lines = append(lines, fmt.Sprintf("  session %d: %s, connected %s ago, debug %s", ss.ID, ss.Client, time.Since(ss.Since).Round(time.Second), onOff(ss.Debugging())))
-		if !strings.HasSuffix(ss.Client, ", griz "+s.Version) {
-			older++
-		}
-	}
-	if older > 0 {
-		lines = append(lines, fmt.Sprintf("%d %s a different griz from the server's; restarting their Claude apps updates them",
-			older, plural(older, "session runs", "sessions run")))
 	}
 	if c := CrashReport(stateDir); c != "" {
 		lines = append(lines, c)
@@ -264,7 +256,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 	}
 	switch hello.Mode {
 	case "mcp":
-		s.serveMCP(c, br, fmt.Sprintf("relay pid %d, griz %s", hello.PID, hello.Version))
+		s.serveMCP(c, br, fmt.Sprintf("relay pid %d", hello.PID))
 	case "cli":
 		s.serveCLI(c, br)
 	}

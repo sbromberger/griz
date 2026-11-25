@@ -20,7 +20,7 @@ import (
 type Session struct {
 	ID     int
 	Since  time.Time
-	Client string // the relay's pid and griz version, set by the server
+	Client string // the relay's pid, set by the server
 
 	debug  atomic.Bool
 	pinned atomic.Bool // pinned memories already sent to this session

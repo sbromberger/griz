@@ -216,21 +216,3 @@ func TestRelayStoreOutcomeUnknown(t *testing.T) {
 	}
 	pw.Close()
 }
-
-// Sessions on another griz build are summed up in one line, not flagged each.
-func TestStatusNotesOlderRelaysOnce(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.DataDir, cfg.StateDir, cfg.Scan.Interval = filepath.Join(t.TempDir(), "d"), t.TempDir(), "0"
-	a, err := app.Open(&cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := &Server{A: a, Version: "test", started: time.Now(), conns: map[*conn]bool{}} // not serving: Status alone
-	for _, v := range []string{"test", "old", "older"} {
-		s.A.NewSession().Client = "relay pid 1, griz " + v
-	}
-	out := strings.Join(s.Status(t.TempDir()), "\n")
-	if strings.Count(out, "different griz") != 1 || !strings.Contains(out, "2 sessions run a different griz") {
-		t.Errorf("want one line for the 2 older relays:\n%s", out)
-	}
-}

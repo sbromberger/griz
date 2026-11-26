@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -21,6 +22,9 @@ import (
 type Repo struct {
 	Dir     string
 	Machine string // prefix for new ids (see NewID)
+	// Prepare, if set, sees every memory just before it is written (griz adds
+	// pending renewals there).
+	Prepare func(m *Memory)
 	writeMu sync.Mutex
 
 	mu    sync.Mutex
@@ -46,8 +50,8 @@ func Open(dir string) (*Repo, error) {
 	}
 	// Commits need an identity; fall back to a local one if none is set.
 	if out, _ := r.Git("config", "user.email"); strings.TrimSpace(out) == "" {
-		r.Git("config", "user.email", "griz@localhost")
-		r.Git("config", "user.name", "griz")
+		_, _ = r.Git("config", "user.email", "griz@localhost")
+		_, _ = r.Git("config", "user.name", "griz")
 	}
 	return r, nil
 }
@@ -186,7 +190,7 @@ func (r *Repo) lookup(key string) (string, bool) {
 	if id, ok := find(); ok && r.exists(r.relOf(id)) {
 		return id, true
 	}
-	r.scan() // changed on disk since the last walk
+	_ = r.scan() // changed on disk since the last walk
 	return find()
 }
 
@@ -222,7 +226,7 @@ func (r *Repo) Exists(key string) bool { _, ok := r.lookup(key); return ok }
 
 // NewID returns an unused id: Machine, "-", and 8 random hex digits.
 func (r *Repo) NewID() string {
-	r.scan()
+	_ = r.scan()
 	for {
 		var b [4]byte
 		rand.Read(b[:])
@@ -281,9 +285,7 @@ func (r *Repo) LoadAll() (mems []*Memory, bad map[string]error, err error) {
 	}
 	bad = map[string]error{}
 	r.mu.Lock()
-	for rel, e := range r.bad {
-		bad[rel] = e
-	}
+	maps.Copy(bad, r.bad)
 	r.mu.Unlock()
 	for _, id := range ids {
 		m, err := r.Read(id)
@@ -298,7 +300,7 @@ func (r *Repo) LoadAll() (mems []*Memory, bad map[string]error, err error) {
 
 // Loose lists memory files (repo-relative) that have no id yet.
 func (r *Repo) Loose() []string {
-	r.scan()
+	_ = r.scan()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.loose...)
@@ -333,7 +335,7 @@ func (r *Repo) AssignIDs(settle time.Duration) ([]string, error) {
 		ids = append(ids, id)
 	}
 	if len(ids) > 0 {
-		r.scan()
+		_ = r.scan()
 	}
 	return ids, nil
 }
@@ -377,6 +379,9 @@ func (r *Repo) Place(m *Memory) error { return r.place(m) }
 
 // put writes m to its file (moving it first if needed).
 func (r *Repo) put(m *Memory) error {
+	if r.Prepare != nil {
+		r.Prepare(m)
+	}
 	if err := r.place(m); err != nil {
 		return err
 	}
@@ -432,14 +437,12 @@ func (r *Repo) rels(ids []string) []string {
 		if cur != "" && r.exists(cur) {
 			add(cur)
 		}
-		for _, m := range moved {
-			specs = append(specs, m)
-		}
+		specs = append(specs, moved...)
 		specs = append(specs, "*."+id+".md")
 	}
 	if len(specs) > 0 {
 		if out2, err := r.Git(append([]string{"ls-files", "-z", "--"}, specs...)...); err == nil {
-			for _, f := range strings.Split(out2, "\x00") {
+			for f := range strings.SplitSeq(out2, "\x00") {
 				add(f)
 			}
 		}
@@ -458,7 +461,7 @@ func (r *Repo) Remove(ids []string, msg string) error {
 	if _, err := r.Git(append([]string{"rm", "-q", "--"}, rels...)...); err != nil {
 		return err
 	}
-	r.scan()
+	_ = r.scan()
 	return r.commit(msg, rels...)
 }
 
@@ -553,7 +556,7 @@ func (r *Repo) Dirty() ([]string, error) {
 		return nil, err
 	}
 	var rels []string
-	for _, rec := range strings.Split(out, "\x00") {
+	for rec := range strings.SplitSeq(out, "\x00") {
 		if len(rec) >= 4 {
 			rels = append(rels, rec[3:])
 		}
@@ -635,7 +638,7 @@ type Ref struct{ ID, Path string }
 
 // Refs lists every memory's id and path, sorted by id.
 func (r *Repo) Refs() []Ref {
-	r.scan()
+	_ = r.scan()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]Ref, 0, len(r.files))

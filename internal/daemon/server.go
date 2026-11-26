@@ -51,7 +51,6 @@ type Server struct {
 	conns     map[*conn]bool
 	idleSince time.Time
 	draining  bool
-	drainOnce sync.Once
 	stop      chan string // reason
 	cliMu     sync.Mutex
 }
@@ -91,20 +90,20 @@ func (s *Server) Listen() error {
 		return err
 	}
 	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		lf.Close()
+		_ = lf.Close()
 		return ErrRunning
 	}
 	s.lockF = lf
 	// Holding the lock: any socket file left is stale.
-	os.Remove(sock)
+	_ = os.Remove(sock)
 	old := syscall.Umask(0o077)
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	syscall.Umask(old)
 	if err != nil {
-		lf.Close()
+		_ = lf.Close()
 		return err
 	}
-	os.Chmod(sock, 0o600)
+	_ = os.Chmod(sock, 0o600)
 	s.ln = ln
 	return nil
 }
@@ -112,7 +111,7 @@ func (s *Server) Listen() error {
 // Serve serves connections until idle, drained (the binary changed), or ctx
 // ends; then it releases the lock.
 func (s *Server) Serve(ctx context.Context) error {
-	defer s.lockF.Close()
+	defer func() { _ = s.lockF.Close() }()
 	s.started = time.Now()
 	s.idleSince = s.started
 	s.conns = map[*conn]bool{}
@@ -159,13 +158,6 @@ func (s *Server) Status(stateDir string) (server string, relays []string, crashe
 	return server, relays, CrashReport(stateDir)
 }
 
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
-}
-
 func onOff(b bool) string {
 	if b {
 		return "on"
@@ -206,22 +198,22 @@ func (s *Server) accept() {
 
 func (s *Server) handle(uc *net.UnixConn) {
 	c := &conn{c: uc, drain: make(chan struct{}), closed: make(chan struct{})}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if s.Check != nil {
 		if err := s.Check(uc); err != nil {
 			// Say why before hanging up, so the client can report it.
 			s.A.Info("refused a connection: %v", err)
-			writeMsg(c, msg{Griz: "done", Error: "REFUSED by the griz server (pid " + fmt.Sprint(os.Getpid()) + "): " + err.Error()})
+			_ = writeMsg(c, msg{Griz: "done", Error: "REFUSED by the griz server (pid " + fmt.Sprint(os.Getpid()) + "): " + err.Error()})
 			return
 		}
 	}
 	br := bufio.NewReaderSize(uc, 64<<10)
-	uc.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = uc.SetReadDeadline(time.Now().Add(10 * time.Second))
 	line, err := readLine(br, maxControl)
 	if err != nil {
 		return
 	}
-	uc.SetReadDeadline(time.Time{})
+	_ = uc.SetReadDeadline(time.Time{})
 	hello, err := parseMsg(line)
 	switch {
 	case err != nil:
@@ -235,17 +227,17 @@ func (s *Server) handle(uc *net.UnixConn) {
 		err = fmt.Errorf("REFUSING: the running griz server serves %s, not %s (different XDG settings?); stop it or use the same settings", s.A.Cfg.DataDir, hello.Data)
 	}
 	if err != nil {
-		writeMsg(c, msg{Griz: "done", Error: "griz server: " + err.Error()})
+		_ = writeMsg(c, msg{Griz: "done", Error: "griz server: " + err.Error()})
 		return
 	}
 	if hello.Binary != "" && s.binID != "" && hello.Binary != s.binID {
 		// The client hashed the executable on disk just now: this server is stale.
-		writeMsg(c, msg{Griz: "stale", Reason: "griz was rebuilt"})
+		_ = writeMsg(c, msg{Griz: "stale", Reason: "griz was rebuilt"})
 		s.requestStop("griz was rebuilt")
 		return
 	}
 	if !s.add(c) {
-		writeMsg(c, msg{Griz: "stale", Reason: "server is shutting down"})
+		_ = writeMsg(c, msg{Griz: "stale", Reason: "server is shutting down"})
 		return
 	}
 	defer s.remove(c)
@@ -255,7 +247,7 @@ func (s *Server) handle(uc *net.UnixConn) {
 	}
 	switch hello.Mode {
 	case "mcp":
-		s.serveMCP(c, br, fmt.Sprintf("pid %d", hello.PID))
+		s.serveMCP(c, br, hello.PID)
 	case "cli":
 		s.serveCLI(c, br, hello.PID)
 	}
@@ -301,7 +293,7 @@ func (s *Server) drainAll(reason string) {
 		conns = append(conns, c)
 	}
 	s.mu.Unlock()
-	s.ln.Close() // removes the socket; the lock is held until Run returns
+	_ = s.ln.Close() // removes the socket; the lock is held until Run returns
 	for _, c := range conns {
 		close(c.drain)
 	}
@@ -323,17 +315,17 @@ func (s *Server) drainAll(reason string) {
 	}
 	for _, c := range conns {
 		if answered(c) {
-			writeMsg(c, msg{Griz: "bye", Reason: reason})
+			_ = writeMsg(c, msg{Griz: "bye", Reason: reason})
 		} else {
-			fmt.Fprintf(s.A.Stderr, "griz: stopping (%s): %d call(s) still running after server.drain_wait %s; closing without waiting\n", reason, c.pending.Load(), s.DrainWait)
+			_, _ = fmt.Fprintf(s.A.Stderr, "griz: stopping (%s): %d call(s) still running after server.drain_wait %s; closing without waiting\n", reason, c.pending.Load(), s.DrainWait)
 		}
-		c.Close()
+		_ = c.Close()
 	}
 	s.A.WaitEmbeds()
 }
 
 // serveMCP runs one Claude session.
-func (s *Server) serveMCP(c *conn, br *bufio.Reader, client string) {
+func (s *Server) serveMCP(c *conn, br *bufio.Reader, pid int) {
 	// A session that began with an earlier server carries on without a new
 	// initialize: this server makes one up and drops its answer.
 	first, err := readLine(br, 64<<20)
@@ -343,14 +335,14 @@ func (s *Server) serveMCP(c *conn, br *bufio.Reader, client string) {
 	var m struct {
 		Method string `json:"method"`
 	}
-	json.Unmarshal(first, &m)
+	_ = json.Unmarshal(first, &m)
 	resumed := m.Method != "initialize"
 	in := io.MultiReader(bytes.NewReader(append(first, '\n')), br)
 	if resumed {
 		in = io.MultiReader(strings.NewReader(resumeInit), in)
 	}
 	sess := s.A.NewSession()
-	sess.Client = client
+	sess.Client, sess.ClientPID = fmt.Sprintf("pid %d", pid), pid
 	if resumed {
 		s.A.MarkPinnedSent(sess) // it had them from an earlier server
 	}
@@ -457,12 +449,12 @@ func (s *Server) serveCLI(c *conn, br *bufio.Reader, pid int) {
 		err = errors.New("expected a cli command")
 	}
 	if err != nil {
-		writeMsg(c, msg{Griz: "done", Error: "griz server: " + err.Error()})
+		_ = writeMsg(c, msg{Griz: "done", Error: "griz server: " + err.Error()})
 		return
 	}
 	if m.Args[0] == stopCmd {
-		writeMsg(c, msg{Griz: "done"})
-		s.requestStop("stopped by griz mcp " + strings.Join(m.Args[1:], " "))
+		_ = writeMsg(c, msg{Griz: "done"})
+		s.requestStop("stopped by griz server " + strings.Join(m.Args[1:], " "))
 		return
 	}
 	s.cliMu.Lock()
@@ -470,10 +462,10 @@ func (s *Server) serveCLI(c *conn, br *bufio.Reader, pid int) {
 	c.pending.Add(1)
 	defer c.pending.Add(-1)
 	if err := s.RunCLI(m.Args, pid, msgWriter{c}); err != nil {
-		writeMsg(c, msg{Griz: "done", Error: err.Error()})
+		_ = writeMsg(c, msg{Griz: "done", Error: err.Error()})
 		return
 	}
-	writeMsg(c, msg{Griz: "done"})
+	_ = writeMsg(c, msg{Griz: "done"})
 }
 
 // msgWriter sends written text as "out" lines.

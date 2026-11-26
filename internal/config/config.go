@@ -70,11 +70,19 @@ func duration(key, v string) (time.Duration, error) {
 func (s Scan) IntervalDuration() (time.Duration, error) { return duration("scan.interval", s.Interval) }
 func (s Scan) SettleDuration() (time.Duration, error)   { return duration("scan.settle", s.Settle) }
 
+// Term is how memories fade in recall. A memory's weight starts at 1 and
+// halves its distance to floor every half-life of its term, counted from
+// its last edit or renewal; infinite and pinned memories don't fade.
 type Term struct {
-	Short  string `toml:"short"`  // lifetime of short-term memories
-	Medium string `toml:"medium"` // lifetime of medium-term memories
-	Long   string `toml:"long"`   // lifetime of long-term memories (infinite never expires)
+	Short     string  `toml:"short"`      // half-life of short-term memories
+	Medium    string  `toml:"medium"`     // half-life of medium-term memories
+	Long      string  `toml:"long"`       // half-life of long-term memories
+	Floor     float64 `toml:"floor"`      // the weight a memory never fades below
+	GetRenews float64 `toml:"get_renews"` // how much of its age a get takes back (0.5: half)
+	Flush     string  `toml:"flush"`      // renewals from reads are written this often (and with any other write, and when the server stops)
 }
+
+func (t Term) FlushDuration() (time.Duration, error) { return duration("term.flush", t.Flush) }
 
 var machineRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
@@ -110,6 +118,7 @@ type Pin struct {
 type Lint struct {
 	UnusedDays   int `toml:"unused_days"`
 	ExpiringDays int `toml:"expiring_days"`
+	FadedHalves  int `toml:"faded_half_lives"` // lint lists memories this many half-lives old as faded
 	LongWords    int `toml:"long_words"`
 }
 
@@ -170,10 +179,10 @@ func Defaults() Config {
 			BM25K1: 1.2, BM25B: 0.75, WeightID: 4, WeightNamespace: 2, WeightTags: 3, WeightBody: 1},
 		Search: Search{MinSimilarity: 0, UnloadAfter: "10m", Candidates: 50},
 		Scan:   Scan{Interval: "10m", Settle: "1m", CommitEdits: true},
-		Term:   Term{Short: "7d", Medium: "6m", Long: "1y"},
+		Term:   Term{Short: "7d", Medium: "6m", Long: "1y", Floor: 0.5, GetRenews: 0.5, Flush: "24h"},
 		Store:  Store{DefaultTerm: "medium", DupCheck: true, DupThreshold: 0.9, DupWordsThreshold: 0.6, NewNSGuard: true},
 		Pin:    Pin{StartupFolder: "agents/startup", StartupWarnChars: 3800, WarnTokens: 2000},
-		Lint:   Lint{UnusedDays: 180, ExpiringDays: 14, LongWords: 500},
+		Lint:   Lint{UnusedDays: 180, ExpiringDays: 14, LongWords: 500, FadedHalves: 4},
 		Warn:   Warn{ViaClaude: true},
 		Log:    Log{Usage: true},
 		Debug:  Debug{TimingsKept: 200},
@@ -237,6 +246,9 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("%s: %s %q: want a length like 7d, 2w, 6m or 1y", c.ConfigFile, key, v)
 		}
 	}
+	if c.Term.Floor < 0 || c.Term.Floor > 1 || c.Term.GetRenews < 0 || c.Term.GetRenews > 1 {
+		return nil, fmt.Errorf("%s: term.floor and term.get_renews want a number from 0 to 1", c.ConfigFile)
+	}
 	if c.Store.Machine != "" && !machineRE.MatchString(c.Store.Machine) {
 		return nil, fmt.Errorf("%s: store.machine %q: want lowercase letters, digits and single dashes, like host or alexs-mac", c.ConfigFile, c.Store.Machine)
 	}
@@ -248,7 +260,7 @@ func Load() (*Config, error) {
 	if c.Search.EmbedWorkers < 0 {
 		return nil, fmt.Errorf("%s: search.embed_workers %d: want 0 (one per CPU) or a positive number", c.ConfigFile, c.Search.EmbedWorkers)
 	}
-	for _, check := range []func() (time.Duration, error){c.Search.UnloadDuration, c.Scan.IntervalDuration, c.Scan.SettleDuration, c.Server.IdleDuration, c.Server.StartDuration, c.Server.DrainDuration} {
+	for _, check := range []func() (time.Duration, error){c.Search.UnloadDuration, c.Scan.IntervalDuration, c.Scan.SettleDuration, c.Server.IdleDuration, c.Server.StartDuration, c.Server.DrainDuration, c.Term.FlushDuration} {
 		if _, err := check(); err != nil {
 			return nil, fmt.Errorf("%s: %w", c.ConfigFile, err)
 		}
@@ -259,6 +271,6 @@ func Load() (*Config, error) {
 // String prints the effective settings as TOML.
 func (c *Config) String() string {
 	var b bytes.Buffer
-	toml.NewEncoder(&b).Encode(c)
+	_ = toml.NewEncoder(&b).Encode(c)
 	return b.String()
 }

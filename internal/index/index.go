@@ -5,6 +5,7 @@ package index
 
 import (
 	"crypto/sha256"
+	"maps"
 	"math"
 	"regexp"
 	"sort"
@@ -22,6 +23,9 @@ type Doc struct {
 	Tags     []string
 	Expires  string // YYYY-MM-DD or ""
 	Archived bool
+	Term     string   // for fading: how fast (see app.weight)
+	Since    string   // for fading: the date it counts from
+	Pin      bool     // pinned memories don't fade
 	Chunks   []string // body split into chunks (text is not kept)
 }
 
@@ -62,6 +66,8 @@ func defaultParams() Params {
 type mem struct {
 	ns, expires string
 	archived    bool
+	term, since string
+	pin         bool
 	chunks      []int // chunk slots
 }
 
@@ -109,7 +115,7 @@ func (x *Mem) Add(d Doc) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	x.remove(d.ID)
-	m := &mem{ns: d.NS, expires: d.Expires, archived: d.Archived}
+	m := &mem{ns: d.NS, expires: d.Expires, archived: d.Archived, term: d.Term, since: d.Since, pin: d.Pin}
 	head := map[string]float64{}
 	for _, t := range Terms(d.Path) {
 		head[t] += x.p.WID
@@ -126,9 +132,7 @@ func (x *Mem) Add(d Doc) {
 	}
 	for i, text := range d.Chunks {
 		c := &chunk{id: d.ID, seq: i, hash: HashOf(d.Path, text), terms: map[string]float64{}, len: headLen}
-		for t, v := range head {
-			c.terms[t] = v
-		}
+		maps.Copy(c.terms, head)
 		for _, t := range Terms(text) {
 			c.terms[t] += x.p.WBody
 			c.len += x.p.WBody
@@ -200,6 +204,17 @@ func (x *Mem) Has(id string) bool {
 	x.mu.RLock()
 	defer x.mu.RUnlock()
 	return x.mems[id] != nil
+}
+
+// Fade returns what a memory's fading depends on: its term, the date it
+// counts from, and whether it is pinned.
+func (x *Mem) Fade(id string) (term, since string, pin bool) {
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	if m := x.mems[id]; m != nil {
+		return m.term, m.since, m.pin
+	}
+	return "", "", false
 }
 
 // ArchivedAt reports whether a memory counts as archived on date today:
@@ -293,7 +308,7 @@ var wordRE = regexp.MustCompile(`[\p{L}\p{N}]+`)
 var stop = map[string]bool{}
 
 func init() {
-	for _, w := range strings.Fields(`a an and are as at be but by can did do does for from had has have how i if in
+	for w := range strings.FieldsSeq(`a an and are as at be but by can did do does for from had has have how i if in
 	into is it its me my of on or our so than that the their them then there these they this to was we were what when
 	where which who why will with you your about any all also just not no
 	s t d ll re ve m`) { // the last line: what's left of possessives and contractions (wife's, don't, I'll)

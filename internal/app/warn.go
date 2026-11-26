@@ -93,13 +93,13 @@ func (a *App) Warn(label, format string, args ...any) {
 		return
 	}
 	a.warns.seen[text] = true
-	fmt.Fprintln(stderr(a.Stderr), "griz: "+text)
+	_, _ = fmt.Fprintln(stderr(a.Stderr), "griz: "+text)
 	a.warns.all = append(a.warns.all, warning{label, text})
 }
 
 // Info prints a notice to stderr only.
 func (a *App) Info(format string, args ...any) {
-	fmt.Fprintf(stderr(a.Stderr), "griz: "+format+"\n", args...)
+	_, _ = fmt.Fprintf(stderr(a.Stderr), "griz: "+format+"\n", args...)
 }
 
 // startupNotice is StartupNoticeFor(App.Local).

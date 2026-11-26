@@ -176,7 +176,7 @@ func (t *tokenizer) words(text string) []string {
 		s = strings.ToLower(s)
 	}
 	var out []string
-	for _, f := range strings.Fields(s) {
+	for f := range strings.FieldsSeq(s) {
 		start := 0
 		for i, r := range f {
 			if isPunct(r) {

@@ -41,7 +41,7 @@ func TestTokenizer(t *testing.T) {
 
 func repeat(s string, n int) string {
 	out := ""
-	for i := 0; i < n; i++ {
+	for range n {
 		out += s
 	}
 	return out
@@ -63,7 +63,7 @@ func TestProbeAndEmbed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.(*Model).Close()
+	defer func() { _ = m.(*Model).Close() }()
 	vs, _ := m.Embed([]string{"Our project partner is Contoso.", "the Contoso folks", "My favorite soup is minestrone."})
 	near, far := embed.Cosine(vs[0], vs[1]), embed.Cosine(vs[0], vs[2])
 	if near <= far || near < 0.4 {
@@ -90,10 +90,12 @@ func TestBufferReuseIsInvisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := e.(*Model)
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	short, long := "the cat upstairs meowing", repeat("a much longer chunk of text about many things ", 20)
 	first, _ := m.EmbedSerial(short)
-	m.EmbedSerial(long)
+	if _, err := m.EmbedSerial(long); err != nil {
+		t.Fatal(err)
+	}
 	again, _ := m.EmbedSerial(short)
 	par, _ := m.Embed([]string{short}) // one text: work split inside each step
 	many, _ := m.Embed([]string{long, short, long, short})

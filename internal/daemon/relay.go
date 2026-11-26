@@ -62,8 +62,7 @@ func (cl *Client) dial(mode string, start bool) (*serverConn, error) {
 		if !start && !errors.As(err, &stale) {
 			return nil, err
 		}
-		var refused errRefused
-		if errors.As(err, &refused) {
+		if _, ok := errors.AsType[errRefused](err); ok {
 			return nil, err
 		}
 		if time.Now().After(deadline) {
@@ -85,7 +84,7 @@ func (cl *Client) dial(mode string, start bool) (*serverConn, error) {
 			case err := <-spawnErr:
 				// Exit 0: another server won the race; keep connecting. Otherwise it failed.
 				if err != nil {
-					return nil, fmt.Errorf("griz server failed to start (%v); run `griz serve` in a terminal to see why", err)
+					return nil, fmt.Errorf("griz server failed to start (%v); run `griz server run` in a terminal to see why", err)
 				}
 				spawned, spawnErr = nil, nil
 			default:
@@ -125,7 +124,7 @@ func (cl *Client) handshake(exe, mode string) (*serverConn, error) {
 			if why := serverReason(c, br); why != "" {
 				return nil, errRefused{why}
 			}
-			c.Close()
+			_ = c.Close()
 			return nil, errRefused{err.Error()}
 		}
 	}
@@ -134,35 +133,35 @@ func (cl *Client) handshake(exe, mode string) (*serverConn, error) {
 		if why := serverReason(c, br); why != "" {
 			return nil, errRefused{why}
 		}
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
-	c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
 	line, err := readLine(br, maxControl)
-	c.SetReadDeadline(time.Time{})
+	_ = c.SetReadDeadline(time.Time{})
 	if err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, err
 	}
 	m, err := parseMsg(line)
 	if err != nil {
-		c.Close()
+		_ = c.Close()
 		return nil, errRefused{"griz server sent " + err.Error()}
 	}
 	switch m.Griz {
 	case "hello":
 	case "stale":
-		c.Close()
+		_ = c.Close()
 		return nil, errStale{m.Reason}
 	case "done":
-		c.Close()
+		_ = c.Close()
 		return nil, errRefused{m.Error}
 	default:
-		c.Close()
+		_ = c.Close()
 		return nil, errRefused{"griz server sent " + m.Griz + " instead of hello"}
 	}
 	if m.Proto != proto {
-		c.Close()
+		_ = c.Close()
 		return nil, errRefused{fmt.Sprintf("griz server speaks protocol %d, this griz %d; restart the Claude app", m.Proto, proto)}
 	}
 	started, _ := time.Parse(time.RFC3339Nano, m.Started)
@@ -172,8 +171,8 @@ func (cl *Client) handshake(exe, mode string) (*serverConn, error) {
 // serverReason reads a refusal the server sent before hanging up ("" if
 // none), and closes c.
 func serverReason(c *net.UnixConn, br *bufio.Reader) string {
-	defer c.Close()
-	c.SetReadDeadline(time.Now().Add(time.Second))
+	defer func() { _ = c.Close() }()
+	_ = c.SetReadDeadline(time.Now().Add(time.Second))
 	line, err := readLine(br, maxControl)
 	if err != nil {
 		return ""
@@ -197,7 +196,7 @@ func (cl *Client) RunCLI(args []string, out io.Writer, start bool) error {
 		}
 		return err
 	}
-	defer sc.c.Close()
+	defer func() { _ = sc.c.Close() }()
 	if err := writeMsg(sc.c, msg{Griz: "cli", Args: args}); err != nil {
 		return err
 	}
@@ -213,7 +212,7 @@ func (cl *Client) RunCLI(args []string, out io.Writer, start bool) error {
 		}
 		switch m.Griz {
 		case "out":
-			io.WriteString(out, m.Text)
+			_, _ = io.WriteString(out, m.Text)
 		case "done":
 			if m.Error != "" {
 				return errors.New(m.Error)
@@ -241,12 +240,12 @@ func (cl *Client) Stop(why string) (int, error) {
 		}
 		return 0, err
 	}
-	defer sc.c.Close()
+	defer func() { _ = sc.c.Close() }()
 	pid := sc.pid
 	if err := writeMsg(sc.c, msg{Griz: "cli", Args: []string{stopCmd, why}}); err != nil {
 		return pid, err
 	}
-	readLine(sc.br, maxControl) // done
+	_, _ = readLine(sc.br, maxControl) // done
 	timeout := cl.StartTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -257,6 +256,19 @@ func (cl *Client) Stop(why string) (int, error) {
 		}
 	}
 	return pid, nil
+}
+
+// ServerVersion returns the running server's griz version and pid, or ErrNoServer.
+func (cl *Client) ServerVersion() (string, int, error) {
+	sc, err := cl.dial("cli", false)
+	if err != nil {
+		if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED) {
+			return "", 0, ErrNoServer
+		}
+		return "", 0, err
+	}
+	_ = sc.c.Close()
+	return sc.version, sc.pid, nil
 }
 
 // SocketPath is where the server for state directory state listens.
@@ -304,7 +316,7 @@ type rpc struct {
 func (r *Relay) write(b []byte) {
 	r.outMu.Lock()
 	defer r.outMu.Unlock()
-	r.Out.Write(append(b, '\n'))
+	_, _ = r.Out.Write(append(b, '\n'))
 }
 
 // Run relays until the client closes stdin.
@@ -316,7 +328,7 @@ func (r *Relay) Run() error {
 		if err != nil {
 			r.mu.Lock()
 			if r.sc != nil {
-				r.sc.c.Close()
+				_ = r.sc.c.Close()
 			}
 			r.mu.Unlock()
 			if errors.Is(err, io.EOF) {
@@ -333,7 +345,7 @@ func (r *Relay) Run() error {
 // send forwards one client message, connecting (and starting a server) if needed.
 func (r *Relay) send(line []byte) {
 	var m rpc
-	json.Unmarshal(line, &m) // a bad message is passed on; the server answers it
+	_ = json.Unmarshal(line, &m) // a bad message is passed on; the server answers it
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var c *call
@@ -396,7 +408,7 @@ func (r *Relay) lostLocked(sc *serverConn, bye string) {
 		return // already handled
 	}
 	r.sc = nil
-	sc.c.Close()
+	_ = sc.c.Close()
 	for _, c := range r.waiting {
 		msg := fmt.Sprintf("griz restarted (%s) before handling this call; retry it.", bye)
 		if bye == "" {

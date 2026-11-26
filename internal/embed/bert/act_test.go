@@ -74,7 +74,7 @@ func TestFastGELUKeepsEmbeddings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 	texts := []string{
 		"the cat upstairs meowing",
 		"Our project partner is Contoso.",
@@ -104,15 +104,21 @@ func TestHiddenActDispatch(t *testing.T) {
 		dir := t.TempDir()
 		for _, f := range []string{"tokenizer.json", "model.safetensors", "modules.json", "1_Pooling", "sentence_bert_config.json"} {
 			if _, err := os.Stat(filepath.Join(src, f)); err == nil {
-				os.Symlink(filepath.Join(src, f), filepath.Join(dir, f))
+				if err := os.Symlink(filepath.Join(src, f), filepath.Join(dir, f)); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 		raw, _ := os.ReadFile(filepath.Join(src, "config.json"))
 		var c map[string]any
-		json.Unmarshal(raw, &c)
+		if err := json.Unmarshal(raw, &c); err != nil {
+			t.Fatal(err)
+		}
 		c["hidden_act"] = act
 		raw, _ = json.Marshal(c)
-		os.WriteFile(filepath.Join(dir, "config.json"), raw, 0o644)
+		if err := os.WriteFile(filepath.Join(dir, "config.json"), raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
 		info, load, err := probe(dir, "")
 		if act == "relu" {
 			if err == nil || !strings.Contains(err.Error(), "relu") {
@@ -132,7 +138,9 @@ func TestHiddenActDispatch(t *testing.T) {
 		if want := actKind[act]; m.act != want {
 			t.Errorf("%s: activation %d, want %d", act, m.act, want)
 		}
-		m.Close()
+		if err := m.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if ids["gelu"] == ids["gelu_new"] {
 		t.Errorf("a different activation must change the model identity")

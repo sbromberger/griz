@@ -8,9 +8,15 @@ import (
 func TestWarningsReachClaudeOnce(t *testing.T) {
 	root := t.TempDir()
 	a := newApp(t, root)
-	os.MkdirAll(a.Repo.Dir+"/notes", 0o755)
-	os.WriteFile(file(a, "notes/bad1"), []byte("---\nbogus: 1\n---\nx\n"), 0o644)
-	os.WriteFile(file(a, "notes/bad2"), []byte("---\nbogus: 2\n---\nx\n"), 0o644)
+	if err := os.MkdirAll(a.Repo.Dir+"/notes", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file(a, "notes/bad1"), []byte("---\nbogus: 1\n---\nx\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file(a, "notes/bad2"), []byte("---\nbogus: 2\n---\nx\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	b := newApp(t, root) // a fresh process sees the broken files at startup
 	b.setPinWarnings([]Warning{{warnPinned, "pinned memories are 900 tokens"}})
 	n := b.startupNotice()

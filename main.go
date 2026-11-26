@@ -9,10 +9,10 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"slices"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -57,19 +57,19 @@ type command struct {
 	name, args, short string
 	long              string // more for griz help <name>
 	where             int
-	hidden            bool
+	gap               bool // help starts a new block of its group here
 	// prep, if set, runs here before the command is sent to the server
 	// (or run locally): reading stdin, asking for confirmation, noting a TTY.
 	prep func(args []string) ([]string, error)
 	run  func(args []string) error
 }
 
-// groups take a subcommand: griz memory term ..., griz debug on.
+// groups take a subcommand: griz memory term ..., griz server stop.
 var groups = map[string]string{
-	"mcp":    "the MCP server",
-	"memory": "housekeeping for memories",
+	"memory": "search, change and look after memories",
+	"server": "the shared server every session and command talks to",
+	"relay":  "one per Claude app, each a griz mcp",
 	"config": "settings",
-	"debug":  "what griz is doing and how long it takes",
 }
 
 var commands []*command
@@ -77,65 +77,100 @@ var commands []*command
 func init() {
 	commands = []*command{
 		{name: "help", args: "[command]", short: "show usage, or details for one command", run: runHelp},
-		{name: "version", short: "print griz's version", run: runVersion},
+		{name: "version", short: "print this griz's version, and the running server's", run: runVersion},
 		{name: "env", short: "show every file and directory griz uses", run: runEnv},
-		{name: "status", short: "memories, model, embedding, scan, sizes, warnings, changed settings", where: either, run: runStatus},
+		{name: "status", short: "processes, memories, model, embedding, scan, sizes, warnings, changed settings", where: either, run: runStatus},
+		{name: "mcp", short: "MCP over stdio, relayed to the shared server (started if needed); what Claude runs", run: func([]string) error { return runRelay() }},
 
-		{name: "recall", args: "<query> [--archived] [--pinned] [--budget n]", where: either, prep: noteTTY, run: runRecall,
+		{name: "memory recall", args: "<query> [--archived] [--pinned] [--budget n]", where: either, prep: noteTTY, run: runRecall,
 			short: "search memories, as Claude does",
 			long: `--archived also searches archived memories; --pinned lists every pinned memory
 (no query needed); --budget caps the reply in tokens. Ids show in full, with
 the part that is enough to name the memory in bold.`},
-		{name: "get", args: "<id>...", where: either, prep: noteTTY, run: runGet, short: "print memories in full",
+		{name: "memory get", args: "<id>...", where: either, prep: noteTTY, run: runGet, short: "print memories in full",
 			long: idHelp},
-		{name: "store", args: "<id> [--body text|-] [--append text|-] [--old text --new text] [--tags a,b] [--term t] [--expires when] [--archived[=false]] [--pin[=false]] [--force] [--new-ns]",
+		{name: "memory store", args: "<id> [--body text|-] [--append text|-] [--old text --new text [--all [--count n]] [--preview]] [--tags a,b] [--term t] [--expires when] [--archived[=false]] [--pin[=false]] [--force] [--new-ns]",
 			where: inSrv, prep: readStdin, run: runStore, short: "save a new memory, or change one",
 			long: `For a new memory give a path (folder/name) and --body; griz assigns the id.
 For an existing one give its id (or a key, below) and one of: --body to
 replace the text, --old and --new to edit in place, --append for a dated
-entry; or only --tags, --term, --expires, --archived or --pin. "-" reads the text
-from stdin. --term is short, medium, long or infinite; --expires is a date,
-a duration (30d, 6m) or none. --force saves even if a similar memory exists;
---new-ns allows a new top-level folder.
+entry; or only --tags, --term, --expires, --archived or --pin. "-" reads the
+text from stdin. --old must match exactly once; --all replaces every copy
+(--count n refuses unless there are n); --preview prints the lines that
+would change and saves nothing. --term (short, medium, long or infinite)
+sets how fast it fades; --expires sets a hard date (2026-12-31, 30d, 6m, or
+never) after which it is archived. --force saves even if a similar memory exists;
+--new-ns allows a new folder.
 
 ` + idHelp},
-		{name: "delete", args: "<id>", where: inSrv, run: runDelete, short: "delete a memory (griz memory restore brings it back)", long: idHelp},
+		{name: "memory delete", args: "<id>...", where: inSrv, run: runDelete, short: "delete memories (griz memory restore brings one back)", long: idHelp},
+		{name: "memory move", args: "<id> <folder or ns/slug> [--new-ns]", where: inSrv, run: runMove,
+			short: "move or rename a memory, keeping its id",
+			long: `Like mv: an existing folder (home/infra), or any target ending in "/",
+receives the memory under its own name; otherwise the target is its new
+path, and its last part the new name. --new-ns allows a folder that doesn't
+exist yet.
 
-		{name: "mcp", short: "MCP over stdio, relayed to the shared server (started if needed); what Claude runs", run: func([]string) error { return runRelay() }},
-		{name: "mcp stop", short: "stop the server; sessions reconnect to a new one on their next call", run: runMCPStop},
-		{name: "mcp restart", short: "stop the server and start a new one (after a config change)", run: runMCPRestart},
-		{name: "mcp status", short: "the server's pid, uptime and sessions", where: either, run: runMCPStatus},
-		{name: "serve", hidden: true, short: "run the shared server (griz mcp starts it)", run: func([]string) error { return runServe() }},
+` + idHelp},
 
-		{name: "memory edit", short: "open $EDITOR in the memory directory (changes are committed once they settle)", run: runMemoryEdit},
-		{name: "memory stats", short: "counts of memories, and a summary of the usage log", where: either, run: runStats},
-		{name: "memory lint", short: "report problems and things worth a look", where: either, run: runLint},
-		{name: "memory term", args: "<short|medium|long|infinite> <id>... [--expires date|duration|none]", where: inSrv, run: runTerm,
-			short: "change memories' lifetimes",
-			long:  "The new term's clock starts now. --expires sets the date outright instead.\n\n" + idHelp},
+		{name: "memory term", gap: true, args: "<short|medium|long|infinite> <id>...", where: inSrv, run: runTerm,
+			short: "change how fast memories fade in recall (renews them)",
+			long: `A memory's weight in recall halves its distance to term.floor every
+half-life of its term (term.short, term.medium, term.long in the config),
+counted from its last edit or renewal. infinite and pinned memories don't
+fade. Nothing is archived for its age.
+
+` + idHelp},
+		{name: "memory expire", args: "<date|duration|never> <id>...", where: inSrv, run: runExpire,
+			short: "set a hard date: memories are archived after it",
+			long:  "A date (2026-12-31), a duration from today (3w, 6m), or never to remove it.\nFading doesn't depend on it.\n\n" + idHelp},
+		{name: "memory renew", args: "<id>...", where: inSrv, run: runRenew,
+			short: "restart memories' fading today, without editing them",
+			long:  "Term and hard date are unchanged. Edits renew too, and each get takes back\npart of a memory's age (term.get_renews).\n\n" + idHelp},
 		{name: "memory archive", args: "<id>...", where: inSrv, run: func(a []string) error { return runArchive(a, true) },
 			short: "archive memories (found by recall --archived, loaded only on request)", long: idHelp},
-		{name: "memory unarchive", args: "<id>... [--expires date|duration|none]", where: inSrv, run: func(a []string) error { return runArchive(a, false) },
-			short: "make archived memories current again", long: "An expired memory needs --expires: a new date, or none.\n\n" + idHelp},
-		{name: "memory restore", args: "<id> [--expires date|duration]", where: inSrv, run: runRestore, short: "bring back a deleted memory"},
+		{name: "memory unarchive", args: "<id>...", where: inSrv, run: func(a []string) error { return runArchive(a, false) },
+			short: "make archived memories current again, and renew them", long: "A hard date that has passed is removed.\n\n" + idHelp},
+		{name: "memory pin", args: "<id>...", where: inSrv, run: func(a []string) error { return runPin(a, true) },
+			short: "pin memories: every session loads them at its start", long: idHelp},
+		{name: "memory unpin", args: "<id>...", where: inSrv, run: func(a []string) error { return runPin(a, false) },
+			short: "unpin memories", long: idHelp},
+		{name: "memory restore", args: "<id>", where: inSrv, run: runRestore, short: "bring back a deleted memory, renewed"},
 		{name: "memory purge", args: "<id>... [--yes]", where: inSrv, prep: confirmPurge, run: runPurge,
-			short: "erase memories from git history for good (asks first)"},
-		{name: "memory gc", where: inSrv, run: func([]string) error { return runGC() }, short: "archive expired memories now and drop unused vectors"},
+			short: "for mistakes: erase memories from git history for good (asks first)"},
 
-		{name: "reindex", where: inSrv, run: func([]string) error { return runReindex() }, short: "recompute every embedding and drop unused vectors"},
+		{name: "memory edit", gap: true, short: "open $EDITOR in the memory directory (changes are committed once they settle)", run: runMemoryEdit},
+		{name: "memory stats", short: "counts of memories, and a summary of the usage log", where: either, run: runStats},
+		{name: "memory lint", short: "report problems and things worth a look", where: either, run: runLint},
+		{name: "memory gc", where: inSrv, run: func([]string) error { return runGC() }, short: "drop vectors no memory uses any more"},
+		{name: "memory reindex", where: inSrv, run: func([]string) error { return runReindex() }, short: "recompute every embedding, then drop unused vectors"},
+		{name: "memory explain", args: "<query> [--id id]", where: either, run: runExplain,
+			short: "show how recall ranks results for a query (and where one memory landed)"},
 
-		{name: "config", hidden: true, run: func([]string) error { return runConfig() }},
-		{name: "config show", short: "print the config file, directories and effective settings", run: func([]string) error { return runConfig() }},
-		{name: "config edit", short: "open the config file in $EDITOR, then check it", run: runConfigEdit},
-
-		{name: "debug on", where: inSrv, run: func([]string) error { return runDebug(true) },
+		{name: "server status", where: either, run: runServerStatus, short: "the server's pid, uptime and sessions"},
+		{name: "server stop", run: runServerStop, short: "stop the server; sessions reconnect to a new one on their next call"},
+		{name: "server restart", run: runServerRestart, short: "stop the server and start a new one (after a config change)"},
+		{name: "server debug", args: "<on|off>", where: inSrv, run: runDebug,
 			short: "debug mode for every session and command, until the server exits",
 			long:  "Claude's replies gain a note of what happened; griz commands print where their time went."},
-		{name: "debug off", where: inSrv, run: func([]string) error { return runDebug(false) }, short: "end debug mode everywhere"},
-		{name: "debug explain", args: "<query> [--id id]", where: either, run: runExplain,
-			short: "show how recall ranks results for a query (and where one memory landed)"},
-		{name: "debug profile", args: "[--out file]", where: inSrv, run: runProfile, short: "CPU-profile a full re-embed and list where the time goes"},
-		{name: "debug timings", where: either, run: runTimings, short: "typical and slowest times of recent operations in the server"},
+		{name: "server timings", where: either, run: runTimings, short: "typical and slowest times of recent operations in the server"},
+		{name: "server profile", args: "[--seconds n | --reembed] [--out file]", where: inSrv, prep: absOut, run: runProfile,
+			short: "CPU-profile the server and list where the time goes",
+			long: `By default it samples the server for --seconds (10), whatever it is doing,
+as Claude's griz tool does. --reembed profiles a full re-embed instead.
+--out also writes the raw profile, for go tool pprof.`},
+		{name: "server run", run: func([]string) error { return runServe() },
+			short: "run the server in this terminal, to see why it won't start (griz mcp starts it otherwise)"},
+
+		{name: "relay status", where: either, run: runRelayStatus, short: "every relay of yours: its app, uptime and session"},
+		{name: "relay kill", args: "<pid>... | --all", run: runRelayKill,
+			short: "stop relays (that app loses griz until it starts griz mcp again)",
+			long: `Only pids griz relay status lists are signalled, each checked again just
+before. The app's griz connection ends; Claude Code reconnects it with /mcp,
+Claude Desktop when it restarts.`},
+
+		{name: "config show", short: "print the config file, directories and effective settings", run: func([]string) error { return runConfig() }},
+		{name: "config edit", short: "open the config file in $EDITOR, then check it", run: runConfigEdit},
 	}
 }
 
@@ -159,15 +194,10 @@ func lookup(args []string) (*command, []string, error) {
 		if c := find(args[0] + " " + args[1]); c != nil {
 			return c, args[2:], nil
 		}
-		if !strings.HasPrefix(args[1], "-") && args[0] != "mcp" {
-			return nil, nil, fmt.Errorf("unknown command \"%s %s\"\n\n%s", args[0], args[1], groupUsage(args[0]))
-		}
+		return nil, nil, fmt.Errorf("unknown command \"%s %s\"\n\n%s", args[0], args[1], groupUsage(args[0]))
 	}
 	if c := find(args[0]); c != nil {
 		return c, args[1:], nil
-	}
-	if _, ok := groups[args[0]]; ok {
-		return nil, nil, fmt.Errorf("griz %s needs a command\n\n%s", args[0], groupUsage(args[0]))
 	}
 	return nil, nil, fmt.Errorf("unknown command %q (griz help lists them)", args[0])
 }
@@ -175,7 +205,7 @@ func lookup(args []string) (*command, []string, error) {
 func main() {
 	server.Version = version
 	if os.Getenv(daemon.ServeEnv) == "1" { // a server started by a relay
-		os.Unsetenv(daemon.ServeEnv) // not for git or anything else it runs
+		_ = os.Unsetenv(daemon.ServeEnv) // not for git or anything else it runs
 		exit(runServe())
 	}
 	if os.Args[0] == daemon.RelayName { // see runRelay
@@ -183,7 +213,7 @@ func main() {
 	}
 	args := os.Args[1:]
 	if len(args) == 0 {
-		fmt.Fprint(errOut, usage())
+		_, _ = fmt.Fprint(errOut, usage())
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -192,17 +222,25 @@ func main() {
 	case "--version", "-v":
 		args[0] = "version"
 	}
+	if _, grp := groups[args[0]]; grp && (len(args) == 1 || args[1] == "--help" || args[1] == "-h") {
+		_, _ = fmt.Fprint(out, groupUsage(args[0])) // a group alone, or asking for help
+		return
+	}
 	c, rest, err := lookup(args)
 	if err != nil {
-		fmt.Fprintln(errOut, "griz:", err)
+		_, _ = fmt.Fprintln(errOut, "griz:", err)
+		os.Exit(2)
+	}
+	if c.name == "mcp" && len(rest) > 0 { // griz mcp status and the like moved to griz server
+		_, _ = fmt.Fprintf(errOut, "griz: unknown command \"mcp %s\": griz mcp takes no arguments (griz server and griz relay control the processes)\n", rest[0])
 		os.Exit(2)
 	}
 	if c.name != "mcp" && (slices.Contains(rest, "--help") || slices.Contains(rest, "-h")) {
-		fmt.Fprint(out, help(c))
+		_, _ = fmt.Fprint(out, help(c))
 		return
 	}
 	if err := dispatch(c, rest); err != nil {
-		fmt.Fprintln(errOut, "griz:", err)
+		_, _ = fmt.Fprintln(errOut, "griz:", err)
 		os.Exit(1)
 	}
 }
@@ -242,15 +280,18 @@ func runInServer(a *app.App) func(args []string, pid int, w io.Writer) error {
 		err := c.run(args[1:])
 		if a.Debugging() {
 			for _, l := range a.TakeDebug() {
-				fmt.Fprintln(w, l)
+				_, _ = fmt.Fprintln(w, l)
 			}
-			fmt.Fprintf(w, "griz debug: griz %s took %s in the server (pid %d)\n", c.name, time.Since(start).Round(100*time.Microsecond), os.Getpid())
+			_, _ = fmt.Fprintf(w, "griz debug: griz %s took %s in the server (pid %d)\n", c.name, time.Since(start).Round(100*time.Microsecond), os.Getpid())
 		}
 		return err
 	}
 }
 
 // ---- help ----
+
+// groupOrder is the order help lists the groups in.
+var groupOrder = []string{"memory", "server", "relay", "config"}
 
 func usage() string {
 	var b strings.Builder
@@ -266,24 +307,17 @@ func usage() string {
 		fmt.Fprintf(&b, "  %-30s %s\n", u, c.short)
 	}
 	for _, c := range commands {
-		if !c.hidden && !strings.Contains(c.name, " ") {
-			if _, grp := groups[c.name]; !grp {
-				line(c)
-			}
-		}
-	}
-	names := make([]string, 0, len(groups))
-	for g := range groups {
-		names = append(names, g)
-	}
-	sort.Strings(names)
-	for _, g := range names {
-		fmt.Fprintf(&b, "\n%s: %s\n", g, groups[g])
-		if c := find(g); c != nil && !c.hidden {
+		if !strings.Contains(c.name, " ") {
 			line(c)
 		}
+	}
+	for _, g := range groupOrder {
+		fmt.Fprintf(&b, "\n%s: %s\n", g, groups[g])
 		for _, c := range commands {
-			if !c.hidden && strings.HasPrefix(c.name, g+" ") {
+			if strings.HasPrefix(c.name, g+" ") {
+				if c.gap {
+					b.WriteByte('\n')
+				}
 				line(c)
 			}
 		}
@@ -295,8 +329,11 @@ func groupUsage(g string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "griz %s: %s\n\n", g, groups[g])
 	for _, c := range commands {
-		if !c.hidden && (c.name == g || strings.HasPrefix(c.name, g+" ")) {
-			fmt.Fprintf(&b, "  griz %-16s %s\n", c.name, c.short)
+		if strings.HasPrefix(c.name, g+" ") {
+			if c.gap {
+				b.WriteByte('\n')
+			}
+			fmt.Fprintf(&b, "  griz %-18s %s\n", c.name, c.short)
 		}
 	}
 	return b.String()
@@ -316,36 +353,60 @@ func help(c *command) string {
 
 func runHelp(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprint(out, usage())
+		_, _ = fmt.Fprint(out, usage())
 		return nil
 	}
 	if _, ok := groups[args[0]]; ok && len(args) == 1 {
-		fmt.Fprint(out, groupUsage(args[0]))
+		_, _ = fmt.Fprint(out, groupUsage(args[0]))
 		return nil
 	}
 	c, _, err := lookup(args)
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(out, help(c))
+	_, _ = fmt.Fprint(out, help(c))
 	return nil
 }
 
-// runVersion prints this griz's version, then the running server's and
-// its sessions'.
+// runVersion prints this griz's version and the running server's.
 func runVersion([]string) error {
 	exe, _ := os.Executable()
-	fmt.Fprintf(out, "griz %s (%s, %s/%s) %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH, exe)
+	_, _ = fmt.Fprintf(out, "griz %s (%s, %s/%s) %s\n", version, runtime.Version(), runtime.GOOS, runtime.GOARCH, exe)
 	cl, err := client()
 	if err != nil {
 		return err
 	}
-	if err := cl.RunCLI([]string{"mcp status"}, out, false); errors.Is(err, daemon.ErrNoServer) {
-		fmt.Fprintln(out, "no griz server running")
-	} else if err != nil {
-		fmt.Fprintln(out, "server:", err)
+	switch v, pid, err := cl.ServerVersion(); {
+	case errors.Is(err, daemon.ErrNoServer):
+		_, _ = fmt.Fprintln(out, "server not running")
+	case err != nil:
+		_, _ = fmt.Fprintln(out, "server:", err)
+	default:
+		_, _ = fmt.Fprintf(out, "server griz %s (pid %d)\n", v, pid)
 	}
 	return nil
+}
+
+// absOut makes --out absolute before the command goes to the server, whose
+// working directory isn't this one.
+func absOut(args []string) ([]string, error) {
+	for i, a := range args {
+		switch {
+		case a == "--out" && i+1 < len(args):
+			p, err := filepath.Abs(args[i+1])
+			if err != nil {
+				return nil, err
+			}
+			args[i+1] = p
+		case strings.HasPrefix(a, "--out="):
+			p, err := filepath.Abs(strings.TrimPrefix(a, "--out="))
+			if err != nil {
+				return nil, err
+			}
+			args[i] = "--out=" + p
+		}
+	}
+	return args, nil
 }
 
 // ---- the server ----
@@ -377,7 +438,7 @@ func runRelay() error {
 		// name, before reading anything. Same pid and pipes; if the exec
 		// fails, relay as we are.
 		if exe, err := os.Executable(); err == nil {
-			syscall.Exec(exe, []string{daemon.RelayName}, os.Environ())
+			_ = syscall.Exec(exe, []string{daemon.RelayName}, os.Environ())
 		}
 	}
 	cl, err := client()
@@ -418,7 +479,12 @@ func runServe() error {
 	if err := a.CommitEdits(); err != nil {
 		a.Warn(app.WarnCommit, "committing hand edits: %v", err)
 	}
-	if gone, err := a.GC(); err != nil {
+	if n, err := a.MigrateExpiry(); err != nil {
+		a.Warn(app.WarnExpiry, "dropping term-derived expiry dates: %v", err)
+	} else if n > 0 {
+		a.Info("memories now fade instead of expiring: dropped the expiry dates their terms had set on %d memories", n)
+	}
+	if gone, err := a.ArchiveExpired(); err != nil {
 		a.Warn(app.WarnExpiry, "archiving expired memories: %v", err)
 	} else if len(gone) > 0 {
 		a.Info("archived (expired): %s", strings.Join(gone, ", "))
@@ -436,27 +502,32 @@ func runServe() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	a.StartScanner(ctx.Done())
-	return srv.Serve(ctx)
+	stopFlush := make(chan struct{})
+	flushed := a.StartRenewFlusher(stopFlush)
+	err = srv.Serve(ctx)
+	close(stopFlush) // write renewals from gets before exiting
+	<-flushed
+	return err
 }
 
-func runMCPStop([]string) error {
+func runServerStop([]string) error {
 	cl, err := client()
 	if err != nil {
 		return err
 	}
 	pid, err := cl.Stop("stop")
 	if errors.Is(err, daemon.ErrNoServer) {
-		fmt.Fprintln(out, "no griz server running")
+		_, _ = fmt.Fprintln(out, "no griz server running")
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "stopped griz server (pid %d)\n", pid)
+	_, _ = fmt.Fprintf(out, "stopped griz server (pid %d)\n", pid)
 	return nil
 }
 
-func runMCPRestart([]string) error {
+func runServerRestart([]string) error {
 	cl, err := client()
 	if err != nil {
 		return err
@@ -464,15 +535,15 @@ func runMCPRestart([]string) error {
 	if _, err := cl.Stop("restart"); err != nil && !errors.Is(err, daemon.ErrNoServer) {
 		return err
 	}
-	return cl.RunCLI([]string{"mcp status"}, out, true)
+	return cl.RunCLI([]string{"server status"}, out, true)
 }
 
-func runMCPStatus([]string) error {
+func runServerStatus([]string) error {
 	if srvApp != nil && srvApp.Processes != nil {
-		fmt.Fprintln(out, srvApp.Processes().Format(true))
+		_, _ = fmt.Fprintln(out, srvApp.Processes().Format(true))
 		return nil
 	}
-	fmt.Fprintln(out, app.Procs{Cmd: fmt.Sprintf("pid %d (griz mcp status)", os.Getpid())}.Format(false))
+	_, _ = fmt.Fprintln(out, app.Procs{Cmd: fmt.Sprintf("pid %d (griz server status)", os.Getpid())}.Format(false))
 	return nil
 }
 
@@ -490,14 +561,14 @@ func runStatus([]string) error {
 			return app.Procs{Cmd: fmt.Sprintf("pid %d (griz status)", os.Getpid()), Crashes: daemon.CrashReport(a.Cfg.StateDir)}
 		}
 	}
-	fmt.Fprintln(out, a.Report())
+	_, _ = fmt.Fprintln(out, a.Report())
 	return nil
 }
 
 // exit ends a role started by name, reporting its error like main does.
 func exit(err error) {
 	if err != nil {
-		fmt.Fprintln(errOut, "griz:", err)
+		_, _ = fmt.Fprintln(errOut, "griz:", err)
 		os.Exit(1)
 	}
 	os.Exit(0)

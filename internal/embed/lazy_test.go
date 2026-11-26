@@ -23,7 +23,9 @@ func TestLazyLoadUnload(t *testing.T) {
 	if ok, n := l.Loaded(); ok || n != 0 {
 		t.Fatal("must not load before use")
 	}
-	l.Embed([]string{"x"})
+	if _, err := l.Embed([]string{"x"}); err != nil {
+		t.Fatal(err)
+	}
 	if ok, _ := l.Loaded(); !ok {
 		t.Fatal("should be loaded")
 	}
@@ -31,7 +33,9 @@ func TestLazyLoadUnload(t *testing.T) {
 	if ok, _ := l.Loaded(); ok || closed != 1 {
 		t.Fatalf("should unload when idle (closed=%d)", closed)
 	}
-	l.Embed([]string{"x"})
+	if _, err := l.Embed([]string{"x"}); err != nil {
+		t.Fatal(err)
+	}
 	if _, n := l.Loaded(); n != 2 {
 		t.Fatalf("should reload: %d loads", n)
 	}
@@ -40,8 +44,11 @@ func TestLazyLoadUnload(t *testing.T) {
 func TestLazyFailureIsFinal(t *testing.T) {
 	calls := 0
 	l := NewLazy(Info{}, func() (Model, error) { calls++; return nil, errors.New("boom") }, 0)
-	l.Embed(nil)
-	l.Embed(nil)
+	for range 2 {
+		if _, err := l.Embed(nil); err == nil {
+			t.Fatal("want the load error")
+		}
+	}
 	if calls != 1 || l.Failed() == nil {
 		t.Fatalf("calls=%d", calls)
 	}

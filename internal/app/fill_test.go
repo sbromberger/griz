@@ -54,12 +54,12 @@ func slowApps(t *testing.T, n int, setup func(put func(id, body string))) ([]*Ap
 	cfg.Store.NewNSGuard = false
 	put := func(id, body string) {
 		p := filepath.Join(cfg.DataDir, testName(id))
-		os.MkdirAll(filepath.Dir(p), 0o755)
-		os.WriteFile(p, (&memory.Memory{ID: id, Body: body}).Format(), 0o644)
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		_ = os.WriteFile(p, (&memory.Memory{ID: id, Body: body}).Format(), 0o644)
 	}
 	setup(put)
 	var apps []*App
-	for i := 0; i < n; i++ {
+	for range n {
 		c := cfg
 		a, err := Open(&c)
 		if err != nil {
@@ -74,7 +74,7 @@ func slowApps(t *testing.T, n int, setup func(put func(id, body string))) ([]*Ap
 
 func TestRecallSearchesCompleteVectors(t *testing.T) {
 	apps, count := slowApps(t, 1, func(put func(id, body string)) {
-		for i := 0; i < 40; i++ {
+		for i := range 40 {
 			put(fmt.Sprintf("bulk/m%02d", i), fmt.Sprintf("memory number %d", i))
 		}
 	})
@@ -90,8 +90,8 @@ func TestRecallSearchesCompleteVectors(t *testing.T) {
 	// store returns at once; the next recall waits for its embedding.
 	a.SetDebug(true)
 	a.TakeDebug()
-	for i := 0; i < 5; i++ {
-		mustStore(t, a, StoreArgs{ID: fmt.Sprintf("bulk/new%d", i), Body: str(fmt.Sprintf("fresh zebra %d", i)), Force: true}, "ok")
+	for i := range 5 {
+		mustStore(t, a, StoreArgs{ID: fmt.Sprintf("bulk/new%d", i), Body: new(fmt.Sprintf("fresh zebra %d", i)), Force: true}, "ok")
 	}
 	out, _, _ = a.Recall("zebra", 0, false)
 	if n := missingN(a); n != 0 {
@@ -108,8 +108,12 @@ func TestRecallSearchesCompleteVectors(t *testing.T) {
 	}
 	// The scan doesn't load an unloaded model.
 	a.model.Unload()
-	os.WriteFile(file(a, "bulk/hand"), []byte("hand edit\n"), 0o644)
-	a.Scan()
+	if err := os.WriteFile(file(a, "bulk/hand"), []byte("hand edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Scan(); err != nil {
+		t.Fatal(err)
+	}
 	a.WaitEmbeds()
 	if loaded, _ := a.model.Loaded(); loaded {
 		t.Error("scan must not load the model")
@@ -123,7 +127,7 @@ func TestStoreEmbedFailureWarns(t *testing.T) {
 	apps, _ := slowApps(t, 1, func(func(id, body string)) {})
 	a := apps[0]
 	a.Cfg.Store.DupCheck = false
-	mustStore(t, a, StoreArgs{ID: "x/bad", Body: str("this will boom")}, "ok")
+	mustStore(t, a, StoreArgs{ID: "x/bad", Body: new("this will boom")}, "ok")
 	a.WaitEmbeds()
 	if !a.Repo.Exists("x/bad") {
 		t.Fatal("the memory must be saved even though embedding failed")
@@ -143,21 +147,22 @@ func missingN(a *App) int {
 
 func TestConcurrentRecallsEmbedOnce(t *testing.T) {
 	apps, count := slowApps(t, 1, func(put func(id, body string)) {
-		for i := 0; i < 24; i++ {
+		for i := range 24 {
 			put(fmt.Sprintf("bulk/m%02d", i), fmt.Sprintf("memory number %d", i))
 		}
 	})
 	a := apps[0]
 	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() { defer wg.Done(); a.Recall("memory", 0, false) }()
+	for range 4 {
+		wg.Go(func() { ; _, _, _ = a.Recall("memory", 0, false) })
 	}
 	// A store landing meanwhile is embedded too, once.
-	mustStore(t, a, StoreArgs{ID: "bulk/late", Body: str("late arrival"), Force: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "bulk/late", Body: new("late arrival"), Force: true}, "ok")
 	wg.Wait()
 	a.WaitEmbeds()
-	a.Recall("memory", 0, false)
+	if _, _, err := a.Recall("memory", 0, false); err != nil {
+		t.Fatal(err)
+	}
 	if n := missingN(a); n != 0 {
 		t.Fatalf("%d missing", n)
 	}
@@ -169,15 +174,19 @@ func TestConcurrentRecallsEmbedOnce(t *testing.T) {
 func TestSavesNeverPrune(t *testing.T) {
 	apps, _ := slowApps(t, 2, func(put func(id, body string)) { put("x/one", "first memory") })
 	a, b := apps[0], apps[1]
-	a.Recall("first", 0, false) // a embeds x/one and saves
+	if _, _, err := a.Recall("first", 0, false); err != nil {
+		t.Fatal(err)
+	} // a embeds x/one and saves
 	// b knows nothing of x/two; a stores it and embeds; b then saves its own vector.
-	mustStore(t, a, StoreArgs{ID: "x/two", Body: str("second memory"), Force: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "x/two", Body: new("second memory"), Force: true}, "ok")
 	a.WaitEmbeds()
 	b.vec.Put("slow", [16]byte{9}, []float32{1, 2})
 	if err := b.saveVectors(); err != nil {
 		t.Fatal(err)
 	}
-	a.vec.Reload()
+	if err := a.vec.Reload(); err != nil {
+		t.Fatal(err)
+	}
 	if n := missingN(a); n != 0 {
 		t.Fatalf("a save by another process dropped %d of a's vectors", n)
 	}
@@ -226,9 +235,9 @@ func TestMemoryLevelFusion(t *testing.T) {
 	a.Stderr = io.Discard
 	a.maxWords = 3
 	// x/long: chunk 1 is the best keyword chunk, chunk 2 the best meaning chunk.
-	mustStore(t, a, StoreArgs{ID: "x/long", Body: str("zebra zebra zebra\n\n♦ quiet words")}, "ok")
+	mustStore(t, a, StoreArgs{ID: "x/long", Body: new("zebra zebra zebra\n\n♦ quiet words")}, "ok")
 	// x/both: one chunk, second in each list.
-	mustStore(t, a, StoreArgs{ID: "x/both", Body: str("zebra ♦ ♦ plain")}, "ok")
+	mustStore(t, a, StoreArgs{ID: "x/both", Body: new("zebra ♦ ♦ plain")}, "ok")
 	a.WaitEmbeds()
 	rk := a.rank("zebra ♦", index.Filter{}, nil)
 	if long, _ := a.Repo.Lookup("x/long"); len(rk.results) < 2 || rk.results[0].id != long {

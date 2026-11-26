@@ -145,7 +145,7 @@ func (a *App) Scan() (err error) {
 	if err := a.Sync(); err != nil {
 		return err
 	}
-	if _, err := a.GC(); err != nil {
+	if _, err := a.ArchiveExpired(); err != nil {
 		a.Warn(WarnExpiry, "archiving expired memories: %v", err)
 	}
 	ids := a.changedFiles()
@@ -191,31 +191,10 @@ func (a *App) StartScanner(stop <-chan struct{}) {
 	}()
 }
 
-// termExpiry is the expiry date for a memory of term written at base ("" for long).
-func (a *App) termExpiry(term string, base time.Time) string {
-	var life string
-	switch term {
-	case "short":
-		life = a.Cfg.Term.Short
-	case "medium":
-		life = a.Cfg.Term.Medium
-	case "long":
-		life = a.Cfg.Term.Long
-	default: // infinite, or none set: never expires
-		return ""
-	}
-	d, err := memory.ParseExpires(life, base)
-	if err != nil {
-		return ""
-	}
-	return d
-}
-
 // applyHandEdit fixes up a memory changed by hand, comparing it with its
-// last committed version. If the term changed and expires didn't, expires is
-// recalculated from the last commit date. When stamp is set (the edit is
-// about to be committed), updated becomes today, and a new file gets created
-// too, unless the edit set those dates itself.
+// last committed version. When stamp is set (the edit is about to be
+// committed), updated becomes today, and a new file gets created too, unless
+// the edit set those dates itself.
 func (a *App) applyHandEdit(id string, stamp bool) {
 	m, err := a.Repo.Read(id)
 	if err != nil {
@@ -229,17 +208,6 @@ func (a *App) applyHandEdit(id string, stamp bool) {
 		prev = &memory.Memory{}
 	}
 	changed := false
-	if m.Term != "" && m.Term != prev.Term && m.Expires == prev.Expires {
-		base := time.Now()
-		if out, err := a.Repo.Git("log", "-1", "--format=%cI", "--", a.Repo.RelPath(id)); err == nil {
-			if t, err := time.Parse(time.RFC3339, strings.TrimSpace(out)); err == nil {
-				base = t
-			}
-		}
-		if e := a.termExpiry(m.Term, base); e != m.Expires {
-			m.Expires, changed = e, true
-		}
-	}
 	if stamp && m.Created == prev.Created && m.Updated == prev.Updated {
 		today := memory.Today()
 		if m.Updated != today {

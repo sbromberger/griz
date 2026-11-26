@@ -31,8 +31,12 @@ func TestPinnedRecallIgnoresBudget(t *testing.T) {
 	a.Stderr = io.Discard
 	m := &memory.Memory{ID: "agents/rules/pushy", Pin: true, Body: strings.Repeat("Present options, then wait. ", 50)}
 	f := filepath.Join(a.Repo.Dir, "agents/rules/pushy.test-00000001.md")
-	os.MkdirAll(filepath.Dir(f), 0o755)
-	os.WriteFile(f, m.Format(), 0o644)
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f, m.Format(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	out, ids, failed := callOp(a, nil, "recall", json.RawMessage(`{"pinned":true,"budget":10}`))
 	if failed || len(out) < 1000 || len(ids) != 1 {
 		t.Fatalf("pinned recall should return everything regardless of budget: %d chars %v", len(out), ids)
@@ -52,8 +56,12 @@ func TestPinnedRideFirstReply(t *testing.T) {
 	a.Stderr = io.Discard
 	m := &memory.Memory{ID: "me/profile", Pin: true, Body: "married Robin"}
 	f := filepath.Join(a.Repo.Dir, "me/profile.test-00000002.md")
-	os.MkdirAll(filepath.Dir(f), 0o755)
-	os.WriteFile(f, m.Format(), 0o644)
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f, m.Format(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	texts := func(s *app.Session, args string) []string {
 		res, err := handler(a, s, "recall", nil)(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: json.RawMessage(args)}})
 		if err != nil {

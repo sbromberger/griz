@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"griz/internal/config"
 	"griz/internal/memory"
@@ -25,7 +24,7 @@ func newApp(t *testing.T, root string) *App {
 	return a
 }
 
-func str(s string) *string { return &s }
+//go:fix inline
 
 func mustStore(t *testing.T, a *App, s StoreArgs, want string) {
 	t.Helper()
@@ -40,14 +39,14 @@ func mustStore(t *testing.T, a *App, s StoreArgs, want string) {
 
 func TestOperations(t *testing.T) {
 	a := newApp(t, t.TempDir())
-	mustStore(t, a, StoreArgs{ID: "writing/dashes", Body: str("No em-dashes.")}, "ERR new folder")
-	mustStore(t, a, StoreArgs{ID: "writing/dashes", Body: str("No em-dashes in text Claude writes."), NewNS: true, Tags: []string{"Style"}}, "ok writing/dashes")
-	mustStore(t, a, StoreArgs{ID: "writing/dashes-again", Body: str("No em-dashes in the text Claude writes.")}, "similar: writing/dashes")
-	mustStore(t, a, StoreArgs{ID: "writing/dashes-again", Body: str("No em-dashes in the text Claude writes."), Force: true}, "ok")
-	mustStore(t, a, StoreArgs{ID: "writing/dashes", Old: str("Claude"), New: str("the assistant")}, "ok")
-	mustStore(t, a, StoreArgs{ID: "writing/dashes", Old: str("nope"), New: str("x")}, "ERR old text not found")
-	mustStore(t, a, StoreArgs{ID: "writing/dashes", Body: str("x"), Old: str("a"), New: str("b")}, "ERR give body")
-	mustStore(t, a, StoreArgs{ID: "travel/trip", Body: str("Trip to Lisbon."), NewNS: true, Expires: str("2020-01-01")}, "ok")
+	mustStore(t, a, StoreArgs{ID: "writing/dashes", Body: new("No em-dashes.")}, "ERR new folder")
+	mustStore(t, a, StoreArgs{ID: "writing/dashes", Body: new("No em-dashes in text Claude writes."), NewNS: true, Tags: []string{"Style"}}, "ok writing/dashes")
+	mustStore(t, a, StoreArgs{ID: "writing/dashes-again", Body: new("No em-dashes in the text Claude writes.")}, "similar: writing/dashes")
+	mustStore(t, a, StoreArgs{ID: "writing/dashes-again", Body: new("No em-dashes in the text Claude writes."), Force: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "writing/dashes", Old: new("Claude"), New: new("the assistant")}, "ok")
+	mustStore(t, a, StoreArgs{ID: "writing/dashes", Old: new("nope"), New: new("x")}, "ERR old text not found")
+	mustStore(t, a, StoreArgs{ID: "writing/dashes", Body: new("x"), Old: new("a"), New: new("b")}, "ERR give body")
+	mustStore(t, a, StoreArgs{ID: "travel/trip", Body: new("Trip to Lisbon."), NewNS: true, Expires: new("2020-01-01")}, "ok")
 
 	m, _ := a.Repo.Read("writing/dashes")
 	if m.Body != "No em-dashes in text the assistant writes." || m.Tags[0] != "style" {
@@ -66,25 +65,21 @@ func TestOperations(t *testing.T) {
 	if out, _, _ := a.Recall("*", 0, false); out != "folders: travel 1, writing 2" {
 		t.Fatalf("list: %q", out)
 	}
-	done, err := a.GC()
+	done, err := a.ArchiveExpired()
 	if err != nil || len(done) != 1 || !a.Repo.Exists("travel/trip") {
 		t.Fatalf("gc archives, never deletes: %v %v", done, err)
 	}
 	if m, _ := a.Repo.Read("travel/trip"); !m.Archived || m.Expires != "2020-01-01" {
 		t.Fatalf("gc keeps the expiry date as the record: %+v", m)
 	}
-	if done, _ := a.GC(); len(done) != 0 {
+	if done, _ := a.ArchiveExpired(); len(done) != 0 {
 		t.Fatal("already archived memories are left alone")
 	}
-	f := false
-	if _, err := a.Store(StoreArgs{ID: "travel/trip", Archived: &f}); err == nil {
-		t.Fatal("unarchiving an expired memory needs a new expires")
+	if r, err := a.Unarchive("travel/trip"); err != nil || !strings.Contains(r, "its date 2020-01-01 had passed; cleared") {
+		t.Fatalf("unarchive: %q %v", r, err)
 	}
-	if err := a.Unarchive("travel/trip", ""); err != nil {
-		t.Fatal(err)
-	}
-	if m, _ := a.Repo.Read("travel/trip"); m.Archived || m.Expires != "" {
-		t.Fatalf("unarchive clears the flag and the past date: %+v", m)
+	if m, _ := a.Repo.Read("travel/trip"); m.Archived || m.Expires != "" || m.Since() != memory.Today() {
+		t.Fatalf("unarchive clears the flag and the past date, and renews: %+v", m)
 	}
 	if out, _, _ := a.Recall("Lisbon", 0, false); !strings.Contains(out, "### travel/trip") {
 		t.Fatalf("unarchived: %q", out)
@@ -92,10 +87,12 @@ func TestOperations(t *testing.T) {
 	if _, err := a.Delete("travel/trip"); err != nil || a.Repo.Exists("travel/trip") {
 		t.Fatal(err)
 	}
-	if err := a.Restore("travel/trip", ""); err != nil || !a.Repo.Exists("travel/trip") {
+	if err := a.Restore("travel/trip"); err != nil || !a.Repo.Exists("travel/trip") {
 		t.Fatalf("restore brings back deleted memories: %v", err)
 	}
-	a.Delete("travel/trip")
+	if _, err := a.Delete("travel/trip"); err != nil {
+		t.Fatal(err)
+	}
 	log, _ := a.Repo.Git("log", "--format=%s")
 	log = noIDs(log)
 	for _, want := range []string{"store writing/dashes", "edit writing/dashes", "expire: travel/trip", "unarchive travel/trip", "delete travel/trip", "restore travel/trip"} {
@@ -114,9 +111,9 @@ func TestRecallBudgetAndExcerpts(t *testing.T) {
 	a.Cfg.Index.ChunkWords = 50
 	a.maxWords = 50
 	long := "# Status\n\n" + strings.Repeat("filler words go here. ", 30) + "\n\n# Partners\n\nThe zebra partner is Contoso."
-	mustStore(t, a, StoreArgs{ID: "proj/status", Body: str(long), NewNS: true}, "ok")
-	for i := 0; i < 6; i++ {
-		mustStore(t, a, StoreArgs{ID: "proj/z" + string(rune('a'+i)), Body: str(strings.Repeat("zebra stripes ", 10+i*3) + string(rune('a'+i))), Force: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "proj/status", Body: new(long), NewNS: true}, "ok")
+	for i := range 6 {
+		mustStore(t, a, StoreArgs{ID: "proj/z" + string(rune('a'+i)), Body: new(strings.Repeat("zebra stripes ", 10+i*3) + string(rune('a'+i))), Force: true}, "ok")
 	}
 	out, _, _ := a.Recall("Contoso partner", 0, false)
 	if !strings.Contains(noIDs(out), "### proj/status (") || strings.Contains(out, "filler") {
@@ -135,16 +132,18 @@ func TestRecallBudgetAndExcerpts(t *testing.T) {
 func TestTwoProcesses(t *testing.T) {
 	root := t.TempDir()
 	a, b := newApp(t, root), newApp(t, root)
-	mustStore(t, a, StoreArgs{ID: "x/one", Body: str("alpha bravo"), NewNS: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "x/one", Body: new("alpha bravo"), NewNS: true}, "ok")
 	if out, _, _ := b.Recall("bravo", 0, false); !strings.Contains(out, "x/one") {
 		t.Fatalf("b should see a's write: %q", out)
 	}
 	// b writes into the namespace a created, then a sees it.
-	mustStore(t, b, StoreArgs{ID: "x/two", Body: str("charlie delta")}, "ok")
+	mustStore(t, b, StoreArgs{ID: "x/two", Body: new("charlie delta")}, "ok")
 	if out, _, _ := a.Recall("delta", 0, false); !strings.Contains(out, "x/two") {
 		t.Fatalf("a should see b's write: %q", out)
 	}
-	b.Delete("x/one")
+	if _, err := b.Delete("x/one"); err != nil {
+		t.Fatal(err)
+	}
 	if out, _, _ := a.Recall("bravo", 0, false); out != "none" {
 		t.Fatalf("a should see b's delete: %q", out)
 	}
@@ -154,7 +153,7 @@ func TestStartupBlockAndPinned(t *testing.T) {
 	a := newApp(t, t.TempDir())
 	write := func(id, body string, pin, archived bool) {
 		m := &memory.Memory{ID: id, Body: body, Pin: pin, Archived: archived}
-		os.WriteFile(file(a, id), m.Format(), 0o644)
+		_ = os.WriteFile(file(a, id), m.Format(), 0o644)
 	}
 	// Only startup-folder memories: no generated line.
 	write("agents/startup/b-date", "Run date first.", false, false)
@@ -218,8 +217,8 @@ func TestStartupBlockAndPinned(t *testing.T) {
 func TestArchive(t *testing.T) {
 	a := newApp(t, t.TempDir())
 	tr, fa := true, false
-	mustStore(t, a, StoreArgs{ID: "proj/old-status", Body: str("Status: the walrus project shipped in 2024."), NewNS: true}, "ok")
-	mustStore(t, a, StoreArgs{ID: "proj/new-status", Body: str("Status: walrus v2 is in planning."), Force: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "proj/old-status", Body: new("Status: the walrus project shipped in 2024."), NewNS: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "proj/new-status", Body: new("Status: walrus v2 is in planning."), Force: true}, "ok")
 	mustStore(t, a, StoreArgs{ID: "proj/old-status", Archived: &tr}, "ok")
 	if log, _ := a.Repo.Git("log", "-1", "--format=%s"); noIDs(log) != "archive proj/old-status\n" {
 		t.Fatalf("commit: %q", log)
@@ -233,7 +232,7 @@ func TestArchive(t *testing.T) {
 	if !strings.Contains(out, "shipped") || strings.Contains(out, "archived:") {
 		t.Fatalf("archived: true treats them as current:\n%s", out)
 	}
-	mustStore(t, a, StoreArgs{ID: "proj/again", Body: str("Status: the walrus project shipped in 2024.")}, "similar: proj/old-status (archived)")
+	mustStore(t, a, StoreArgs{ID: "proj/again", Body: new("Status: the walrus project shipped in 2024.")}, "similar: proj/old-status (archived)")
 	mustStore(t, a, StoreArgs{ID: "proj/old-status", Archived: &fa}, "ok")
 	if m, _ := a.Repo.Read("proj/old-status"); m.Archived {
 		t.Fatal("unarchive")
@@ -241,7 +240,9 @@ func TestArchive(t *testing.T) {
 	// Pinned and archived: left out of the pinned set, with a warning.
 	m, _ := a.Repo.Read("proj/new-status")
 	m.Pin, m.Archived = true, true
-	os.WriteFile(file(a, m.ID), m.Format(), 0o644)
+	if err := os.WriteFile(file(a, m.ID), m.Format(), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	pinned, _, _ := a.Pinned()
 	warns, _ := a.PinWarnings()
 	if pinned != "none" || len(warns) != 1 || warns[0].Label != warnPinArchived {
@@ -252,7 +253,6 @@ func TestArchive(t *testing.T) {
 func TestTerms(t *testing.T) {
 	a := newApp(t, t.TempDir())
 	a.Cfg.Scan.Settle = "0"
-	now := time.Now()
 	want := func(id, term, expires string) {
 		t.Helper()
 		m, err := a.Repo.Read(id)
@@ -260,31 +260,33 @@ func TestTerms(t *testing.T) {
 			t.Fatalf("%s: got term %q expires %q, want %q %q (%v)", id, m.Term, m.Expires, term, expires, err)
 		}
 	}
-	six := now.AddDate(0, 6, 0).Format(memory.DateLayout)
-	mustStore(t, a, StoreArgs{ID: "x/default", Body: str("a"), NewNS: true}, "ok")
-	want("x/default", "medium", six)
-	long, short := "long", "short"
-	mustStore(t, a, StoreArgs{ID: "x/rule", Body: str("b"), Term: &long, Force: true}, "ok")
-	want("x/rule", "long", now.AddDate(1, 0, 0).Format(memory.DateLayout))
-	inf := "infinite"
-	mustStore(t, a, StoreArgs{ID: "x/forever", Body: str("f"), Term: &inf, Force: true}, "ok")
-	want("x/forever", "infinite", "")
-	mustStore(t, a, StoreArgs{ID: "x/note", Body: str("c"), Term: &short, Force: true}, "ok")
-	want("x/note", "short", now.AddDate(0, 0, 7).Format(memory.DateLayout))
+	// A term sets how fast a memory fades, never a date.
+	mustStore(t, a, StoreArgs{ID: "x/default", Body: new("a"), NewNS: true}, "ok")
+	want("x/default", "medium", "")
+	short := "short"
+	mustStore(t, a, StoreArgs{ID: "x/note", Body: new("c"), Term: &short, Force: true}, "ok")
+	want("x/note", "short", "")
+	// A hard date is kept until someone changes it: edits don't move it.
 	exp := "2030-01-01"
-	mustStore(t, a, StoreArgs{ID: "x/note", Body: str("c2"), Expires: &exp}, "ok")
-	want("x/note", "short", "2030-01-01") // explicit expires wins for that write
-	mustStore(t, a, StoreArgs{ID: "x/note", Old: str("c2"), New: str("c3")}, "ok")
-	want("x/note", "short", now.AddDate(0, 0, 7).Format(memory.DateLayout)) // edits restart the clock
+	mustStore(t, a, StoreArgs{ID: "x/note", Body: new("c2"), Expires: &exp}, "ok")
+	mustStore(t, a, StoreArgs{ID: "x/note", Old: new("c2"), New: new("c3")}, "ok")
+	want("x/note", "short", "2030-01-01")
+	never := "never"
+	mustStore(t, a, StoreArgs{ID: "x/note", Expires: &never}, "ok")
+	want("x/note", "short", "")
 	bad := "forever"
-	mustStore(t, a, StoreArgs{ID: "x/bad", Body: str("d"), Term: &bad}, "ERR term")
+	mustStore(t, a, StoreArgs{ID: "x/bad", Body: new("d"), Term: &bad}, "ERR term")
 
-	// A term changed by hand is picked up by the scan, counted from the last commit.
-	m, _ := a.Repo.Read("x/rule")
+	// A term changed by hand stays as written, with no date.
+	m, _ := a.Repo.Read("x/default")
 	m.Term = "short"
-	os.WriteFile(file(a, "x/rule"), m.Format(), 0o644)
-	a.Scan()
-	want("x/rule", "short", now.AddDate(0, 0, 7).Format(memory.DateLayout))
+	if err := os.WriteFile(file(a, "x/default"), m.Format(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	want("x/default", "short", "")
 	if clean, _ := a.Repo.Clean(); !clean {
 		t.Fatal("hand edit should be committed")
 	}
@@ -295,11 +297,11 @@ func TestNestedFolders(t *testing.T) {
 	if memory.NS("work/research/survey-design") != "work/research" {
 		t.Fatal("folder is everything before the last /")
 	}
-	mustStore(t, a, StoreArgs{ID: "work/metrics", Body: str("Metrics scoring"), NewNS: true}, "ok")
-	mustStore(t, a, StoreArgs{ID: "work/research/survey-design", Body: str("Survey structure")}, `ERR new folder "work/research"`)
-	mustStore(t, a, StoreArgs{ID: "work/research/survey-design", Body: str("Survey structure"), NewNS: true}, "ok")
-	mustStore(t, a, StoreArgs{ID: "work/research/lab-notebook", Body: str("Lab notebook")}, "ok")
-	mustStore(t, a, StoreArgs{ID: "home/garden", Body: str("Garden plan"), NewNS: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "work/metrics", Body: new("Metrics scoring"), NewNS: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "work/research/survey-design", Body: new("Survey structure")}, `ERR new folder "work/research"`)
+	mustStore(t, a, StoreArgs{ID: "work/research/survey-design", Body: new("Survey structure"), NewNS: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "work/research/lab-notebook", Body: new("Lab notebook")}, "ok")
+	mustStore(t, a, StoreArgs{ID: "home/garden", Body: new("Garden plan"), NewNS: true}, "ok")
 	tr := true
 	mustStore(t, a, StoreArgs{ID: "work/metrics", Archived: &tr}, "ok")
 	if out, _, _ := a.Recall("*", 0, false); out != "folders: home 1, work 3 (research 2)" {

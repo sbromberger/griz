@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -78,7 +79,7 @@ func (s *Store) Reload() error {
 
 func (s *Store) reload() error {
 	if s.data != nil {
-		syscall.Munmap(s.data)
+		_ = syscall.Munmap(s.data)
 		s.data = nil
 	}
 	s.locs = map[key]loc{}
@@ -90,7 +91,7 @@ func (s *Store) reload() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil || st.Size() < int64(len(magic)) {
 		return err
@@ -100,7 +101,7 @@ func (s *Store) reload() error {
 		return err
 	}
 	if string(data[:len(magic)]) != magic {
-		syscall.Munmap(data)
+		_ = syscall.Munmap(data)
 		return nil // unknown file: treat as empty; the next write replaces it
 	}
 	s.data = data
@@ -201,16 +202,14 @@ func (s *Store) save(keep map[index.Hash]bool) error {
 	for k := range s.locs {
 		all[k] = s.get(k)
 	}
-	for k, v := range pending {
-		all[k] = v
-	}
+	maps.Copy(all, pending)
 	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".vectors-*.tmp")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	w := bufio.NewWriter(tmp)
-	w.WriteString(magic)
+	_, _ = w.WriteString(magic)
 	p := len(magic)
 	var hdr bytes.Buffer
 	for k, v := range all {
@@ -218,24 +217,24 @@ func (s *Store) save(keep map[index.Hash]bool) error {
 			continue
 		}
 		hdr.Reset()
-		binary.Write(&hdr, binary.LittleEndian, uint16(len(k.model)))
+		_ = binary.Write(&hdr, binary.LittleEndian, uint16(len(k.model)))
 		hdr.WriteString(k.model)
 		hdr.Write(k.hash[:])
-		binary.Write(&hdr, binary.LittleEndian, uint32(len(v)))
+		_ = binary.Write(&hdr, binary.LittleEndian, uint32(len(v)))
 		for (p+hdr.Len())%4 != 0 {
 			hdr.WriteByte(0)
 		}
-		w.Write(hdr.Bytes())
+		_, _ = w.Write(hdr.Bytes())
 		p += hdr.Len()
 		var buf [4]byte
 		for _, f := range v {
 			binary.LittleEndian.PutUint32(buf[:], math.Float32bits(f))
-			w.Write(buf[:])
+			_, _ = w.Write(buf[:])
 		}
 		p += 4 * len(v)
 	}
 	if err := w.Flush(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -252,7 +251,7 @@ func (s *Store) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.data != nil {
-		syscall.Munmap(s.data)
+		_ = syscall.Munmap(s.data)
 		s.data = nil
 	}
 }

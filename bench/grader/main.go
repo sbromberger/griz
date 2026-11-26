@@ -36,8 +36,11 @@ func main() {
 		sc := bufio.NewScanner(fh)
 		sc.Buffer(make([]byte, 1<<22), 1<<22)
 		for sc.Scan() {
-			var r struct{ Kind, Text string; I int }
-			json.Unmarshal(sc.Bytes(), &r)
+			var r struct {
+				Kind, Text string
+				I          int
+			}
+			_ = json.Unmarshal(sc.Bytes(), &r)
 			if r.Kind == "q" {
 				m[r.I] = r.Text
 			}

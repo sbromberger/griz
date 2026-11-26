@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"strings"
@@ -13,10 +14,10 @@ import (
 )
 
 type rpc struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      int             `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  any             `json:"params,omitempty"`
+	JSONRPC string `json:"jsonrpc"`
+	ID      int    `json:"id,omitempty"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
 }
 
 func main() {
@@ -35,7 +36,7 @@ func main() {
 	}
 	qs := []string{}
 	b, _ := os.ReadFile(*qfile)
-	for _, l := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+	for l := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
 		qs = append(qs, strings.SplitN(l, "\t", 2)[0])
 	}
 
@@ -53,7 +54,7 @@ func main() {
 	id := 0
 	call := func(method string, params any) map[string]any {
 		id++
-		enc.Encode(rpc{JSONRPC: "2.0", ID: id, Method: method, Params: params})
+		_ = enc.Encode(rpc{JSONRPC: "2.0", ID: id, Method: method, Params: params})
 		for {
 			line, err := rd.ReadBytes('\n')
 			if err != nil {
@@ -73,17 +74,15 @@ func main() {
 
 	init := call("initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "bench", "version": "1"}})
 	initMs := time.Since(start).Milliseconds()
-	enc.Encode(rpc{JSONRPC: "2.0", Method: "notifications/initialized"})
+	_ = enc.Encode(rpc{JSONRPC: "2.0", Method: "notifications/initialized"})
 	instr, _ := init["result"].(map[string]any)["instructions"].(string)
 	tl := call("tools/list", map[string]any{})
 	tj, _ := json.Marshal(tl["result"].(map[string]any)["tools"])
-	w.Encode(map[string]any{"kind": "header", "name": *name, "init_ms": initMs, "instructions": instr, "tools_json_bytes": len(tj)})
+	_ = w.Encode(map[string]any{"kind": "header", "name": *name, "init_ms": initMs, "instructions": instr, "tools_json_bytes": len(tj)})
 
 	for i, q := range qs {
 		args := map[string]any{*arg: q}
-		for k, v := range ex {
-			args[k] = v
-		}
+		maps.Copy(args, ex)
 		t0 := time.Now()
 		r := call("tools/call", map[string]any{"name": *tool, "arguments": args})
 		ms := float64(time.Since(t0).Microseconds()) / 1000
@@ -94,11 +93,12 @@ func main() {
 			}
 		} else {
 			e, _ := json.Marshal(r["error"])
-			text.WriteString("ERROR " + string(e))
+			text.WriteString("ERROR ")
+			text.Write(e)
 		}
-		w.Encode(map[string]any{"kind": "q", "i": i, "q": q, "ms": ms, "text": text.String()})
+		_ = w.Encode(map[string]any{"kind": "q", "i": i, "q": q, "ms": ms, "text": text.String()})
 	}
-	f.Close()
-	in.Close()
-	cmd.Wait()
+	_ = f.Close()
+	_ = in.Close()
+	_ = cmd.Wait()
 }

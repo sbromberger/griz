@@ -54,7 +54,7 @@ func chunk(body string, maxWords int) []string {
 // splitBig splits one paragraph by lines, and lines by words.
 func splitBig(p string, maxWords int) []string {
 	var units []string
-	for _, line := range strings.Split(p, "\n") {
+	for line := range strings.SplitSeq(p, "\n") {
 		if words(line) <= maxWords {
 			units = append(units, line)
 			continue

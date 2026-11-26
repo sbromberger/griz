@@ -12,7 +12,7 @@ import (
 func TestCreatedUpdatedAndAppend(t *testing.T) {
 	a := newApp(t, t.TempDir())
 	today := memory.Today()
-	mustStore(t, a, StoreArgs{ID: "log/house", Body: str("### June 2\nfirst note about the boiler"), NewNS: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "log/house", Body: new("### June 2\nfirst note about the boiler"), NewNS: true}, "ok")
 	m, _ := a.Repo.Read("log/house")
 	if m.Created != today || m.Updated != today {
 		t.Fatalf("created %q updated %q, want %s", m.Created, m.Updated, today)
@@ -20,15 +20,19 @@ func TestCreatedUpdatedAndAppend(t *testing.T) {
 
 	// An existing memory with no created date doesn't get one invented.
 	put(a, &memory.Memory{ID: "log/old", Body: "old note", Updated: "2025-01-02"})
-	a.Repo.CommitAll("add old")
-	a.Sync()
-	mustStore(t, a, StoreArgs{ID: "log/old", Old: str("old"), New: str("older")}, "ok")
+	if err := a.Repo.CommitAll("add old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	mustStore(t, a, StoreArgs{ID: "log/old", Old: new("old"), New: new("older")}, "ok")
 	if m, _ := a.Repo.Read("log/old"); m.Created != "" || m.Updated != today {
 		t.Errorf("edit: created %q updated %q", m.Created, m.Updated)
 	}
 
 	// append adds a dated entry at the end.
-	mustStore(t, a, StoreArgs{ID: "log/house", Append: str("  boiler serviced  ")}, "ok")
+	mustStore(t, a, StoreArgs{ID: "log/house", Append: new("  boiler serviced  ")}, "ok")
 	m, _ = a.Repo.Read("log/house")
 	entry := regexp.MustCompile(`\n\n\*\*\d{4}-\d{2}-\d{2} \d{2}:\d{2}\*\* — boiler serviced$`)
 	if !entry.MatchString(m.Body) {
@@ -39,17 +43,17 @@ func TestCreatedUpdatedAndAppend(t *testing.T) {
 	}
 
 	// append creates a missing memory; the folder guard still applies.
-	if _, err := a.Store(StoreArgs{ID: "diary/day", Append: str("hello")}); err == nil || !strings.Contains(err.Error(), "new folder") {
+	if _, err := a.Store(StoreArgs{ID: "diary/day", Append: new("hello")}); err == nil || !strings.Contains(err.Error(), "new folder") {
 		t.Errorf("append to new folder: %v", err)
 	}
-	mustStore(t, a, StoreArgs{ID: "log/garden", Append: str("planted tomatoes")}, "ok")
+	mustStore(t, a, StoreArgs{ID: "log/garden", Append: new("planted tomatoes")}, "ok")
 	if m, _ := a.Repo.Read("log/garden"); !strings.HasPrefix(m.Body, "**") || m.Created != today || m.Term == "" {
 		t.Errorf("append-created memory: %+v", m)
 	}
 	for _, bad := range []StoreArgs{
-		{ID: "log/house", Append: str("x"), Body: str("y")},
-		{ID: "log/house", Append: str("x"), Old: str("a"), New: str("b")},
-		{ID: "log/house", Append: str("  ")},
+		{ID: "log/house", Append: new("x"), Body: new("y")},
+		{ID: "log/house", Append: new("x"), Old: new("a"), New: new("b")},
+		{ID: "log/house", Append: new("  ")},
 	} {
 		if _, err := a.Store(bad); err == nil {
 			t.Errorf("store %+v should fail", bad)
@@ -73,7 +77,7 @@ func TestRecallExcerptShowsUpdated(t *testing.T) {
 	a := newApp(t, t.TempDir())
 	a.Cfg.Recall.ExcerptWords = 5
 	a.maxWords = 5
-	mustStore(t, a, StoreArgs{ID: "log/long", Body: str("alpha one two three four\n\n## Next\nzebra five six seven"), NewNS: true}, "ok")
+	mustStore(t, a, StoreArgs{ID: "log/long", Body: new("alpha one two three four\n\n## Next\nzebra five six seven"), NewNS: true}, "ok")
 	out, _, _ := a.Recall("zebra", 0, false)
 	if !strings.Contains(out, " of 3, updated "+memory.Today()+")\nzebra") {
 		t.Errorf("recall: %q", out)
@@ -86,12 +90,18 @@ func TestHandEditDates(t *testing.T) {
 	today := memory.Today()
 	put(a, &memory.Memory{ID: "notes/a", Body: "a", Created: "2025-01-01", Updated: "2025-01-01"})
 	put(a, &memory.Memory{ID: "notes/b", Body: "b", Created: "2025-01-01", Updated: "2025-01-01"})
-	a.Repo.CommitAll("seed")
-	a.Sync()
+	if err := a.Repo.CommitAll("seed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
 
 	put(a, &memory.Memory{ID: "notes/a", Body: "a edited", Created: "2025-01-01", Updated: "2025-01-01"})
 	put(a, &memory.Memory{ID: "notes/b", Body: "b edited", Created: "2025-01-01", Updated: "2025-03-03"})
-	os.WriteFile(file(a, "notes/c"), []byte("new by hand\n"), 0o644)
+	if err := os.WriteFile(file(a, "notes/c"), []byte("new by hand\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := a.Scan(); err != nil {
 		t.Fatal(err)
 	}

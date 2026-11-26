@@ -18,7 +18,7 @@ func file(a *App, p string) string {
 	}
 	dir, slug := filepath.Split(p)
 	f := filepath.Join(a.Repo.Dir, dir, slug+"."+a.Repo.NewID()+".md")
-	os.MkdirAll(filepath.Dir(f), 0o755)
+	_ = os.MkdirAll(filepath.Dir(f), 0o755)
 	return f
 }
 
@@ -33,7 +33,7 @@ func put(a *App, m *memory.Memory) {
 	} else {
 		m.ID = a.Repo.NewID()
 	}
-	a.Repo.Put(m)
+	_ = a.Repo.Put(m)
 }
 
 var labelIDRE = regexp.MustCompile(` \[[a-z0-9-]+-[0-9a-f]{8}\]`)

@@ -37,7 +37,7 @@ func TestResolveKeys(t *testing.T) {
 	}
 
 	// store: a new path makes a new memory with a fresh id; the same path again updates it.
-	got, err := a.Store(StoreArgs{ID: "notes/fresh", Body: str("one")})
+	got, err := a.Store(StoreArgs{ID: "notes/fresh", Body: new("one")})
 	if err != nil || !strings.HasPrefix(got, "ok notes/fresh [") {
 		t.Fatalf("store new: %q %v", got, err)
 	}
@@ -45,11 +45,13 @@ func TestResolveKeys(t *testing.T) {
 	if memory.ValidID(id) != nil {
 		t.Fatalf("new id %q", id)
 	}
-	a.Store(StoreArgs{ID: "notes/fresh", Body: str("two")})
+	if _, err := a.Store(StoreArgs{ID: "notes/fresh", Body: new("two")}); err != nil {
+		t.Fatal(err)
+	}
 	if again, _ := a.Repo.Lookup("notes/fresh"); again != id {
 		t.Errorf("storing to the same path must update, not create: %s vs %s", again, id)
 	}
-	if _, err := a.Store(StoreArgs{ID: "nopath", Body: str("x")}); err == nil {
+	if _, err := a.Store(StoreArgs{ID: "nopath", Body: new("x")}); err == nil {
 		t.Error("a key that is neither a memory nor a path must not create anything")
 	}
 }

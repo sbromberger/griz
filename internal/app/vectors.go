@@ -304,9 +304,7 @@ func (a *App) embedAsync(sess *Session, why string, ids ...string) {
 			refs = append(refs, r)
 		}
 	}
-	a.embedWG.Add(1)
-	go func() {
-		defer a.embedWG.Done()
+	a.embedWG.Go(func() {
 		op := a.BeginOp(sess, "embed ("+why+")")
 		if sess == nil {
 			op = a.beginShared("embed (" + why + ")")
@@ -318,7 +316,7 @@ func (a *App) embedAsync(sess *Session, why string, ids ...string) {
 		if res.Chunks > 0 || err != nil {
 			a.EndOp(op, ids)
 		}
-	}()
+	})
 }
 
 // WaitEmbeds waits for embedding started by store or the scan.

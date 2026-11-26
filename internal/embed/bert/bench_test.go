@@ -13,7 +13,7 @@ func BenchmarkEmbed128(b *testing.B) {
 	text := strings.Repeat("memory ", 200)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.Embed([]string{text})
+		_, _ = m.Embed([]string{text})
 	}
 }
 
@@ -28,6 +28,6 @@ func BenchmarkEmbedBatch8(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.Embed(texts)
+		_, _ = m.Embed(texts)
 	}
 }

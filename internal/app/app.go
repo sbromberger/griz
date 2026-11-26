@@ -3,7 +3,6 @@
 package app
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,6 +44,7 @@ type App struct {
 	sess     sessions
 	ops      opLog
 	lastScan scanReport
+	renew    renewals // from gets, not yet written (see fade.go)
 
 	mu       sync.Mutex // guards head, stamps and pinIDs
 	head     string
@@ -87,6 +87,7 @@ func Open(cfg *config.Config) (*App, error) {
 		slots:    make(chan struct{}, cfg.Search.Workers()),
 		Local:    &Session{Since: time.Now()},
 	}
+	repo.Prepare = a.prepare
 	if a.maxWords <= 0 {
 		a.maxWords = config.Defaults().Index.ChunkWords
 	}
@@ -149,7 +150,8 @@ func (a *App) Model() *embed.Lazy { return a.model }
 func (a *App) chunk(body string) []string { return chunk(body, a.maxWords) }
 
 func (a *App) doc(m *memory.Memory) index.Doc {
-	return index.Doc{ID: m.ID, Path: m.Path, NS: m.NS(), Tags: m.Tags, Expires: m.Expires, Archived: m.Archived, Chunks: a.chunk(m.Body)}
+	return index.Doc{ID: m.ID, Path: m.Path, NS: m.NS(), Tags: m.Tags, Expires: m.Expires, Archived: m.Archived,
+		Term: m.Term, Since: m.Since(), Pin: m.Pin, Chunks: a.chunk(m.Body)}
 }
 
 // reloadAll rebuilds the index from every file.
@@ -238,7 +240,7 @@ func (a *App) removed(ids ...string) {
 // pinsChanged recomputes the pin warnings, once the server has asked for them.
 func (a *App) pinsChanged() {
 	if a.pinWatch.Load() {
-		a.RefreshPinWarnings()
+		_ = a.RefreshPinWarnings()
 	}
 }
 
@@ -278,7 +280,7 @@ func (a *App) Sync() error {
 	a.mu.Lock()
 	a.head = head
 	a.mu.Unlock()
-	a.vec.Reload()
+	_ = a.vec.Reload()
 	return nil
 }
 
@@ -368,9 +370,9 @@ func (a *App) embed(texts []string, op *Op) ([][]float32, error) {
 
 // ---- expiry ----
 
-// GC archives expired memories (sets archived: true, keeping the expires
+// ArchiveExpired archives expired memories (sets archived: true, keeping the expires
 // date as the record) with one git commit. Returns the ids archived.
-func (a *App) GC() ([]string, error) {
+func (a *App) ArchiveExpired() ([]string, error) {
 	var done []string
 	err := a.write(func() error {
 		mems, _, err := a.Repo.LoadAll()
@@ -407,31 +409,19 @@ func (a *App) GC() ([]string, error) {
 	return done, err
 }
 
-// Unarchive clears the archived flag. expires "" removes a past expiry date
-// (a future one is kept); otherwise it sets a new date, duration or none.
-func (a *App) Unarchive(id, expires string) error {
+// Unarchive clears the archived flag and renews the memory. A hard date
+// that has passed is cleared (the reply says so); a future one is kept.
+func (a *App) Unarchive(id string) (string, error) {
 	f := false
-	args := StoreArgs{ID: id, Archived: &f}
-	if expires != "" {
-		args.Expires = &expires
-	} else if m, err := a.Repo.Read(id); err == nil && m.Expired(memory.Today()) {
-		none := "none"
-		args.Expires = &none
-	}
-	_, err := a.Store(args)
-	return err
+	return a.Store(StoreArgs{ID: id, Archived: &f})
 }
 
 // Restore brings back a deleted memory from git history, by its id or its
 // path (ns/slug). It keeps its id; one deleted before ids existed gets a new
-// one. expires "" removes the expiry; otherwise it is a date or duration.
-func (a *App) Restore(key, expires string) error {
+// one. It is renewed, and a hard date that has passed is cleared.
+func (a *App) Restore(key string) error {
 	if memory.ValidID(key) != nil && memory.ValidPath(key) != nil {
 		return fmt.Errorf("restore takes a full id (host-1a2b3c4d) or a path (ns/slug), not %q", key)
-	}
-	exp, err := memory.ParseExpires(expires, time.Now())
-	if err != nil {
-		return err
 	}
 	return a.write(func() error {
 		if a.Repo.Exists(key) {
@@ -452,7 +442,13 @@ func (a *App) Restore(key, expires string) error {
 		if err != nil {
 			return err
 		}
-		m.Path, m.Expires = path, exp
+		m.Path = path
+		if today := memory.Today(); m.Expired(today) {
+			m.Expires = ""
+		}
+		if today := memory.Today(); today > m.Updated {
+			m.Renewed = today
+		}
 		if err := a.Repo.Write(m, fmt.Sprintf("restore %s (from %.8s)", m.Label(), commit)); err != nil {
 			return err
 		}
@@ -622,6 +618,7 @@ func (a *App) MarkPinnedSent(s *Session) {
 }
 
 // Tokens estimates tokens as characters / 4.
-func Tokens(s string) int { return (len(s) + 3) / 4 }
+func Tokens(s string) int { return tokensOf(len(s)) }
 
-var errNotFound = errors.New("not found")
+// tokensOf estimates the tokens in n bytes of text.
+func tokensOf(n int) int { return (n + 3) / 4 }

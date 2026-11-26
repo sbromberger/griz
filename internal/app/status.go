@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"runtime"
 	"runtime/pprof"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -160,7 +161,7 @@ func (a *App) Report() string {
 // PeakRSS is this process's peak resident memory in bytes, since it started.
 func PeakRSS() int64 {
 	var ru syscall.Rusage
-	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+	_ = syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
 	rss := ru.Maxrss // bytes on macOS, KB on Linux
 	if runtime.GOOS != "darwin" {
 		rss *= 1024
@@ -182,13 +183,13 @@ func configDiff(c *config.Config) []string {
 	cv, dv := reflect.ValueOf(*c), reflect.ValueOf(def)
 	for i := 0; i < cv.NumField(); i++ {
 		f := cv.Type().Field(i)
-		sec := strings.Split(f.Tag.Get("toml"), ",")[0]
+		sec, _, _ := strings.Cut(f.Tag.Get("toml"), ",")
 		if sec == "" || sec == "-" || f.Type.Kind() != reflect.Struct {
 			continue
 		}
 		for k := 0; k < f.Type.NumField(); k++ {
 			kf := f.Type.Field(k)
-			name := strings.Split(kf.Tag.Get("toml"), ",")[0]
+			name, _, _ := strings.Cut(kf.Tag.Get("toml"), ",")
 			x, y := cv.Field(i).Field(k).Interface(), dv.Field(i).Field(k).Interface()
 			if !reflect.DeepEqual(x, y) {
 				out = append(out, fmt.Sprintf("%s.%s = %v (default %v)", sec, name, show(x), show(y)))
@@ -223,13 +224,13 @@ func (a *App) Explain(q, id string) (string, error) {
 	if rk.byVector {
 		fmt.Fprintf(&b, ", vectors %d of %d chunks at similarity >= %.2f", rk.vecHits, rk.searched, a.Cfg.Search.MinSimilarity)
 	} else {
-		b.WriteString(", no search by meaning (" + a.Status() + ")")
+		fmt.Fprintf(&b, ", no search by meaning (%s)", a.Status())
 	}
-	fmt.Fprintf(&b, "; each list's top %d chunks collapsed to memories (score of best chunk); blend = %.2f × keyword/best keyword + %.2f × similarity/best similarity (keyword weight from tokens per word)\n",
+	fmt.Fprintf(&b, "; each list's top %d chunks collapsed to memories (score of best chunk); score = fade × (%.2f × keyword/best keyword + %.2f × similarity/best similarity) (keyword weight from tokens per word; fade from age and term)\n",
 		a.Cfg.Search.Candidates, rk.alpha, 1-rk.alpha)
 	shown := a.Cfg.Recall.FullResults + a.Cfg.Recall.IDResults
 	today := memory.Today()
-	b.WriteString("\nrank  blend   keyword (rank score chunk)  vector (rank sim chunk)  shown  id\n")
+	b.WriteString("\nrank  score   fade  keyword (rank score chunk)  vector (rank sim chunk)  shown  id\n")
 	for i, r := range rk.results {
 		if i >= shown {
 			fmt.Fprintf(&b, "... %d more below what recall shows (full_results %d + id_results %d)\n",
@@ -240,13 +241,14 @@ func (a *App) Explain(q, id string) (string, error) {
 		if a.ix.ArchivedAt(r.id, today) {
 			note = " (archived)"
 		}
-		fmt.Fprintf(&b, "%-5d %.4f  %-26s  %-23s  %-5d  %s%s\n", i+1, r.score, kwCell(r), vecCell(r), r.seq+1, r.id, note)
+		fmt.Fprintf(&b, "%-5d %.4f  %.2f  %-26s  %-23s  %-5d  %s%s\n", i+1, r.score, r.weight, kwCell(r), vecCell(r), r.seq+1, r.id, note)
 	}
 	if len(rk.results) == 0 {
 		b.WriteString("(no results)\n")
 	}
 	if id != "" {
-		b.WriteString("\n" + a.explainID(q, id, rk))
+		b.WriteByte('\n')
+		b.WriteString(a.explainID(q, id, rk))
 	}
 	return strings.TrimRight(b.String(), "\n"), nil
 }
@@ -274,7 +276,7 @@ func (a *App) explainID(q, id string, rk ranking) string {
 	var b strings.Builder
 	for i, r := range rk.results {
 		if r.id == id {
-			fmt.Fprintf(&b, "%s: rank %d of %d (blend %.4f; keyword %s; vector %s; shows chunk %d)\n", id, i+1, len(rk.results), r.score, kwCell(r), vecCell(r), r.seq+1)
+			fmt.Fprintf(&b, "%s: rank %d of %d (score %.4f; %s; keyword %s; vector %s; shows chunk %d)\n", id, i+1, len(rk.results), r.score, a.fadeNote(id, memory.Today()), kwCell(r), vecCell(r), r.seq+1)
 			break
 		}
 	}
@@ -376,8 +378,8 @@ func topFunctions(p *profile.Profile, wall time.Duration) string {
 		total += v
 		seen := map[string]bool{}
 		for li, loc := range s.Location {
-			for l := len(loc.Line) - 1; l >= 0; l-- {
-				name := loc.Line[l].Function.Name
+			for l, ln := range slices.Backward(loc.Line) {
+				name := ln.Function.Name
 				if li == 0 && l == len(loc.Line)-1 {
 					flat[name] += v
 				}

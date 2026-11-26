@@ -22,12 +22,16 @@ func TestLogIsPrivate(t *testing.T) {
 	if m := mode(); m != 0o600 {
 		t.Errorf("new log: %v", m)
 	}
-	os.Chmod(l.Path, 0o644)
+	if err := os.Chmod(l.Path, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	l.Write(e)
 	if m := mode(); m != 0o600 {
 		t.Errorf("a looser log should be tightened: %v", m)
 	}
-	os.WriteFile(l.Path+".tmp", nil, 0o644) // a leftover from an interrupted Forget
+	if err := os.WriteFile(l.Path+".tmp", nil, 0o644); err != nil {
+		t.Fatal(err)
+	} // a leftover from an interrupted Forget
 	if err := l.Forget([]string{"host-1a2b3c4d"}); err != nil {
 		t.Fatal(err)
 	}

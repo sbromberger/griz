@@ -28,14 +28,14 @@ func runLint([]string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "search: %s\n%d memories\ntool definitions: ~%d tokens\n", a.Status(), len(mems), server.ToolTokens())
+	_, _ = fmt.Fprintf(out, "search: %s\n%d memories\ntool definitions: ~%d tokens\n", a.Status(), len(mems), server.ToolTokens())
 	section := func(title string, lines []string) {
 		if len(lines) == 0 {
 			return
 		}
-		fmt.Fprintf(out, "\n%s (%d)\n", title, len(lines))
+		_, _ = fmt.Fprintf(out, "\n%s (%d)\n", title, len(lines))
 		for _, l := range lines {
-			fmt.Fprintln(out, "  "+l)
+			_, _ = fmt.Fprintln(out, "  "+l)
 		}
 	}
 	var lines []string
@@ -73,11 +73,11 @@ func runLint([]string) error {
 		if pinnedText != "none" {
 			pinned = app.Tokens(pinnedText)
 		}
-		fmt.Fprintf(out, "\nstartup block: %d characters (warn at %d; the apps cut at about 4096)\n", len(block), cfg.Pin.StartupWarnChars)
-		fmt.Fprintf(out, "pinned (loaded by recall pinned: true): ~%d tokens (warn at %d)\n", pinned, cfg.Pin.WarnTokens)
+		_, _ = fmt.Fprintf(out, "\nstartup block: %d characters (warn at %d; the apps cut at about 4096)\n", len(block), cfg.Pin.StartupWarnChars)
+		_, _ = fmt.Fprintf(out, "pinned (loaded by recall pinned: true): ~%d tokens (warn at %d)\n", pinned, cfg.Pin.WarnTokens)
 		if warns, err := a.PinWarnings(); err == nil {
 			for _, w := range warns {
-				fmt.Fprintln(out, "  warning:", w.Text)
+				_, _ = fmt.Fprintln(out, "  warning:", w.Text)
 			}
 		}
 	}
@@ -120,6 +120,18 @@ func runLint([]string) error {
 		}
 	}
 	section(fmt.Sprintf("expiring within %d days (then archived)", cfg.Lint.ExpiringDays), lines)
+
+	lines = nil
+	for _, m := range mems {
+		if !m.Archived && a.Faded(m.ID) {
+			term := m.Term
+			if term == "" {
+				term = cfg.Store.DefaultTerm
+			}
+			lines = append(lines, m.Label()+": "+term+", unchanged since "+a.Since(m.ID))
+		}
+	}
+	section(fmt.Sprintf("faded: %d half-lives or more without an edit or renewal (renew, archive, or leave)", cfg.Lint.FadedHalves), lines)
 	return nil
 }
 
@@ -159,26 +171,26 @@ func runStats([]string) error {
 		terms[t]++
 		folders[strings.SplitN(m.Path, "/", 2)[0]]++
 	}
-	fmt.Fprintf(out, "%d memories: %d current, %d archived, %d pinned", len(mems), len(mems)-archived, archived, pinned)
+	_, _ = fmt.Fprintf(out, "%d memories: %d current, %d archived, %d pinned", len(mems), len(mems)-archived, archived, pinned)
 	if len(bad) > 0 {
-		fmt.Fprintf(out, "; %d unreadable (griz memory lint)", len(bad))
+		_, _ = fmt.Fprintf(out, "; %d unreadable (griz memory lint)", len(bad))
 	}
 	count := func(label string, m map[string]int) {
 		var parts []string
 		for _, k := range sortedKeys(m) {
 			parts = append(parts, fmt.Sprintf("%s %d", k, m[k]))
 		}
-		fmt.Fprintf(out, "\n%s: %s", label, strings.Join(parts, ", "))
+		_, _ = fmt.Fprintf(out, "\n%s: %s", label, strings.Join(parts, ", "))
 	}
 	count("by term", terms)
 	count("by folder", folders)
-	fmt.Fprint(out, "\n\n")
+	_, _ = fmt.Fprint(out, "\n\n")
 	es, err := a.Usage.Read()
 	if err != nil {
 		return err
 	}
 	if len(es) == 0 {
-		fmt.Fprintln(out, "usage log is empty:", a.Usage.Path)
+		_, _ = fmt.Fprintln(out, "usage log is empty:", a.Usage.Path)
 		return nil
 	}
 	type agg struct {
@@ -207,14 +219,14 @@ func runStats([]string) error {
 			idCount[id]++
 		}
 	}
-	fmt.Fprintf(out, "%s to %s, %d calls\n\n", es[0].Time.Format(memory.DateLayout), es[len(es)-1].Time.Format(memory.DateLayout), len(es))
-	fmt.Fprintf(out, "%-8s %6s %10s %11s %11s %8s %8s\n", "tool", "calls", "avg in", "avg out", "max out", "avg ms", "max ms")
+	_, _ = fmt.Fprintf(out, "%s to %s, %d calls\n\n", es[0].Time.Format(memory.DateLayout), es[len(es)-1].Time.Format(memory.DateLayout), len(es))
+	_, _ = fmt.Fprintf(out, "%-8s %6s %10s %11s %11s %8s %8s\n", "tool", "calls", "avg in", "avg out", "max out", "avg ms", "max ms")
 	for _, t := range sortedKeys(by) {
 		g := by[t]
-		fmt.Fprintf(out, "%-8s %6d %7d tk %8d tk %8d tk %8d %8d\n", t, g.n, g.in/g.n/4, g.out/g.n/4, g.maxO/4, g.ms/int64(g.n), g.maxMS)
+		_, _ = fmt.Fprintf(out, "%-8s %6d %7d tk %8d tk %8d tk %8d %8d\n", t, g.n, g.in/g.n/4, g.out/g.n/4, g.maxO/4, g.ms/int64(g.n), g.maxMS)
 	}
 	if g := by["recall"]; g != nil {
-		fmt.Fprintf(out, "\nrecalls returning none: %d of %d\n", g.none, g.n)
+		_, _ = fmt.Fprintf(out, "\nrecalls returning none: %d of %d\n", g.none, g.n)
 	}
 	type kv struct {
 		id string
@@ -229,9 +241,9 @@ func runStats([]string) error {
 		top = top[:10]
 	}
 	if len(top) > 0 {
-		fmt.Fprintln(out, "\nmost returned:")
+		_, _ = fmt.Fprintln(out, "\nmost returned:")
 		for _, t := range top {
-			fmt.Fprintf(out, "  %4d  %s\n", t.n, t.id)
+			_, _ = fmt.Fprintf(out, "  %4d  %s\n", t.n, t.id)
 		}
 	}
 	return nil
@@ -278,9 +290,9 @@ func runPurge(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(out, plan)
+	_, _ = fmt.Fprint(out, plan)
 	if !yes {
-		fmt.Fprint(out, "\nType yes to continue: ")
+		_, _ = fmt.Fprint(out, "\nType yes to continue: ")
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		if strings.TrimSpace(line) != "yes" {
 			return fmt.Errorf("cancelled; nothing changed")
@@ -306,8 +318,8 @@ func runPurge(args []string) error {
 	if err := a.Usage.Forget(ids); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "\npurged %d memories from this Mac.\n", len(ids))
-	fmt.Fprintln(out, "Backups made before now still hold them until those backups expire.")
+	_, _ = fmt.Fprintf(out, "\npurged %d memories from this Mac.\n", len(ids))
+	_, _ = fmt.Fprintln(out, "Backups made before now still hold them until those backups expire.")
 	return nil
 }
 
@@ -375,7 +387,7 @@ func confirmPurge(args []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprint(out, plan, "\nType yes to continue: ")
+	_, _ = fmt.Fprint(out, plan, "\nType yes to continue: ")
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	if strings.TrimSpace(line) != "yes" {
 		return nil, fmt.Errorf("cancelled; nothing changed")

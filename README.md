@@ -17,26 +17,32 @@ leaves the machine: search, embeddings and storage all run locally.
   pure Go, with no Python and no network, and uses Go's SIMD package when
   built with `GOEXPERIMENT=simd`.
 - **Replies sized for a context window.** `recall` returns the best matches
-  in full, then a short list of further ids, within a token budget.
+  (short memories whole, long ones as their best-matching sections, more than
+  one when they score above the weakest result), then a short list of further
+  ids, within a token budget.
   Archived memories appear only as ids, on a separate line.
 - **Memories that load themselves.** Memories in a startup folder go into
   the instructions every session receives; pinned memories load on the first
   `recall`. griz warns when either grows past a size you set.
-- **Lifetimes.** A memory is `short`, `medium`, `long` or `infinite` term.
-  When its term runs out it is archived, never deleted: still searchable,
-  just out of the way. Deleted memories can be restored from git history,
-  and `griz memory purge` erases one from history for good.
+- **Fading, not forgetting.** A memory is `short`, `medium`, `long` or
+  `infinite` term: how fast it fades in recall. Its weight halves toward a
+  floor every half-life of its term, counted from its last edit or renewal;
+  reading it in full takes back half its age. Nothing is archived or deleted
+  for its age. A memory can also have a hard date, after which it is
+  archived: still searchable, just out of the way. Deleted memories can be
+  restored from git history, and `griz memory purge` erases one from history
+  for good (it is meant for mistakes).
 - **Permanent ids.** Each memory has an id like `host-1a2b3c4d` that
   survives renames and moves. Commands accept the id, its first few hex
   digits (as many as make it unique, like git), the path, or part of the
   name.
 - **One shared server.** Every Claude app starts `griz mcp`, a small relay
-  that connects to one shared `griz serve` process, so all sessions see the
+  that connects to one shared server process, so all sessions see the
   same memories at once and the model is loaded only once. The server starts
   on demand, exits when idle, hands over to a new build after `go install`,
   and reports crashes to every session.
 - **Guard rails.** Storing near-duplicates is refused unless forced, new
-  top-level folders need an explicit flag, and `griz memory lint` reports
+  folders, at any depth, need an explicit flag, and `griz memory lint` reports
   long memories, likely duplicates, unused ones and broken files.
 - **Local only.** The server listens on a Unix socket in a directory only
   you can open, and accepts a connection only from your own user running
@@ -87,29 +93,32 @@ itself; sessions carry on.
 |---|---|
 | `recall` | Search memories (`q`); `pinned: true` loads every pinned memory; `archived: true` includes old ones |
 | `get` | Full text of memories by id |
-| `store` | Create a memory at a path, or change one: new body, an in-place edit (`old`/`new`), a dated `append`, or just its tags, term, expiry, pin or archived flag |
+| `store` | Create a memory at a path, or change one: new body, an in-place edit (`old`/`new`: one copy, or every copy with `all`; `preview` shows what would change), a dated `append`, a `move`, or just its tags, term, expiry, pin or archived flag |
 | `delete` | Delete a memory (it can be restored) |
 | `griz` | Status, timings, a ranking explanation for a query, or debug mode for the session |
 
 ## Command line
 
-The same binary is a CLI. `griz help` lists everything; `griz help <command>`
-gives details. The common ones:
+The same binary is a CLI. `griz help` lists everything, `griz help <command>`
+gives details, and a group alone (`griz memory`) lists its commands. Commands
+are grouped by what they act on:
 
 ```sh
-griz recall "where is the spare key?"     # search, as Claude does
-griz get 1a2b                             # a memory by id, path or name
-griz store notes/garden --body "Plant garlic in October" --term long
-griz memory term infinite 1a2b            # change a lifetime
-griz memory archive 1a2b                  # or unarchive, restore, purge
-griz memory edit                          # $EDITOR in the memory folder
-griz memory stats                         # counts, and the usage log
-griz memory lint                          # long, duplicate, unused or broken memories
-griz status                               # memories, model, warnings
-griz version                              # this build, the server's, and each session's
-griz env                                  # every file and folder griz uses
-griz mcp restart                          # after a config change
-griz debug on                             # timings for every session and command
+griz memory recall "where is the spare key?"   # search, as Claude does
+griz memory get 1a2b                           # a memory by id, path or name
+griz memory store notes/garden --body "Plant garlic in October" --term long
+griz memory move 1a2b home/infra               # keeps its id; or rename: home/infra/proxy
+griz memory term infinite 1a2b                 # how fast it fades; or expire, renew
+griz memory archive 1a2b 3c4d                  # or unarchive, pin, unpin, delete, restore, purge
+griz memory edit                               # $EDITOR in the memory folder
+griz memory lint                               # long, duplicate, unused or broken memories
+griz server status                             # the server, its sessions
+griz server restart                            # after a config change
+griz server debug on                           # timings for every session and command
+griz relay status                              # every griz mcp of yours, and its app
+griz status                                    # everything: processes, memories, model, warnings
+griz version                                   # this build and the server's
+griz env                                       # every file and folder griz uses
 ```
 
 ## Memory files
@@ -120,7 +129,6 @@ tags: [garden]
 pin: true
 term: long
 updated: 2026-10-02
-expires: 2027-10-02
 ---
 Plant garlic in October; harvest when the lower leaves brown.
 ```
@@ -134,7 +142,7 @@ you add by hand get an id on the next scan.
 griz reads `~/.config/griz/config.toml` (or `$XDG_CONFIG_HOME/griz/config.toml`)
 over its defaults. Every option is optional. `griz config show` prints the
 effective settings, and `griz config edit` opens the file and checks it.
-Changes take effect after `griz mcp restart`.
+Changes take effect after `griz server restart`.
 
 The options you are most likely to want:
 
@@ -155,10 +163,13 @@ embed_workers = 0       # chunks embedded at once; 0 = one per CPU
 budget       = 800      # tokens per recall reply
 full_results = 3        # results shown in full; more are listed by id
 
-[term]                  # lifetimes; infinite never expires
-short  = "7d"
-medium = "6m"
-long   = "1y"
+[term]                  # how memories fade in recall; infinite and pinned don't
+short      = "7d"       # half-lives
+medium     = "6m"
+long       = "1y"
+floor      = 0.5        # the weight a memory never fades below
+get_renews = 0.5        # how much of its age reading a memory takes back
+flush      = "24h"      # renewals from reads are written this often, and when the server stops
 
 [store]
 default_term = "medium"

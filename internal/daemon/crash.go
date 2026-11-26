@@ -27,21 +27,21 @@ func StartCrashFile(stateDir string) (done func(), err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	os.Chmod(dir, 0o700)
+	_ = os.Chmod(dir, 0o700)
 	name := filepath.Join(dir, fmt.Sprintf("%s-%d.txt", time.Now().Format(crashLayout), os.Getpid()))
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, err
 	}
 	if err := debug.SetCrashOutput(f, debug.CrashOptions{}); err != nil {
-		f.Close()
-		os.Remove(name)
+		_ = f.Close()
+		_ = os.Remove(name)
 		return nil, err
 	}
 	return func() {
-		debug.SetCrashOutput(nil, debug.CrashOptions{})
-		f.Close()
-		os.Remove(name)
+		_ = debug.SetCrashOutput(nil, debug.CrashOptions{})
+		_ = f.Close()
+		_ = os.Remove(name)
 	}, nil
 }
 
@@ -84,7 +84,7 @@ func firstLine(path string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		if l := strings.TrimSpace(sc.Text()); l != "" {
@@ -127,12 +127,12 @@ func CrashReport(stateDir string) string {
 		case c.Size > 0:
 			kept := strings.TrimSuffix(c.Path, ".txt") + ".shown.txt"
 			lines = append(lines, fmt.Sprintf("  server pid %d (started %s) CRASHED: %s (report: %s)", c.pid, c.started.Format("2006-01-02 15:04:05"), c.first, kept))
-			os.Rename(c.Path, kept)
+			_ = os.Rename(c.Path, kept)
 		case c.pid == os.Getpid() || alive(c.pid):
 			continue // running
 		default:
 			lines = append(lines, fmt.Sprintf("  server pid %d (started %s) disappeared without a crash report (killed?)", c.pid, c.started.Format("2006-01-02 15:04:05")))
-			os.Remove(c.Path)
+			_ = os.Remove(c.Path)
 		}
 	}
 	if len(lines) == 0 {

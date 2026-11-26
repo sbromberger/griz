@@ -154,7 +154,7 @@ func probe(dir, docPrefix string) (embed.Info, embed.Loader, error) {
 	}
 	h := sha256.New()
 	for _, b := range [][]byte{cfgRaw, tokRaw, hdr, []byte(fmt.Sprint(size)), []byte(docPrefix), []byte(actImpl[c.Act])} {
-		fmt.Fprintf(h, "%d:", len(b))
+		_, _ = fmt.Fprintf(h, "%d:", len(b))
 		h.Write(b)
 	}
 	info = embed.Info{
@@ -210,7 +210,7 @@ func safetensorsHeader(path string) ([]byte, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil {
 		return nil, 0, err
@@ -233,7 +233,7 @@ func safetensorsHeader(path string) ([]byte, int64, error) {
 // modelName gives "all-MiniLM-L6-v2" for a Hugging Face cache snapshot path,
 // otherwise the folder name.
 func modelName(dir string) string {
-	for _, part := range strings.Split(filepath.ToSlash(filepath.Clean(dir)), "/") {
+	for part := range strings.SplitSeq(filepath.ToSlash(filepath.Clean(dir)), "/") {
 		if rest, ok := strings.CutPrefix(part, "models--"); ok {
 			if i := strings.LastIndex(rest, "--"); i >= 0 {
 				return rest[i+2:]
@@ -308,7 +308,7 @@ func (m *Model) loadWeights(path string, c bertConfig) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil {
 		return err
@@ -318,7 +318,7 @@ func (m *Model) loadWeights(path string, c bertConfig) error {
 		return err
 	}
 	m.data = data
-	fail := func(err error) error { syscall.Munmap(data); m.data = nil; return err }
+	fail := func(err error) error { _ = syscall.Munmap(data); m.data = nil; return err }
 	if len(data) < 8 {
 		return fail(errors.New("model.safetensors: too short"))
 	}
@@ -351,7 +351,7 @@ func (m *Model) loadWeights(path string, c bertConfig) error {
 			return nil
 		}
 		var t info
-		json.Unmarshal(raw, &t)
+		_ = json.Unmarshal(raw, &t)
 		if t.Dtype != "F32" {
 			lerr = fmt.Errorf("model.safetensors: %s is %s; only F32 is supported", name, t.Dtype)
 			return nil

@@ -24,7 +24,9 @@ func TestSaveReload(t *testing.T) {
 		t.Fatal("keys after reload")
 	}
 	s2.Put("m", index.Hash{3}, []float32{6})
-	s2.Save()
+	if err := s2.Save(); err != nil {
+		t.Fatal(err)
+	}
 	// The first saves again without losing the second's entry, and prunes h1.
 	s.Put("m", index.Hash{4}, []float32{7})
 	if err := s.Prune(map[index.Hash]bool{h2: true, {3}: true, {4}: true}); err != nil {

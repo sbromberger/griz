@@ -43,7 +43,8 @@ func exePath(pid int) (string, error) {
 		maxPath             = 4 * 1024 // PROC_PIDPATHINFO_MAXSIZE
 	)
 	buf := make([]byte, maxPath)
-	_, _, errno := syscall.Syscall6(unix.SYS_PROC_INFO, procInfoCallPIDInfo, uintptr(pid), procPIDPathInfo, 0,
+	// libproc's wrapper needs cgo; the raw call is what it makes.
+	_, _, errno := syscall.Syscall6(unix.SYS_PROC_INFO, procInfoCallPIDInfo, uintptr(pid), procPIDPathInfo, 0, //nolint:staticcheck // SA1019: no cgo-free wrapper exists
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	if errno != 0 {
 		return "", errno

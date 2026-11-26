@@ -30,7 +30,7 @@ func TestMain(m *testing.M) {
 		panic(string(out))
 	}
 	code := m.Run()
-	os.RemoveAll(dir)
+	_ = os.RemoveAll(dir)
 	os.Exit(code)
 }
 
@@ -52,17 +52,23 @@ func newEnv(t *testing.T, config string) *env {
 	// Each test gets its own copy of the binary, so rebuilding one doesn't touch others.
 	bin := filepath.Join(root, "griz")
 	b, _ := os.ReadFile(grizBin)
-	os.WriteFile(bin, b, 0o755)
-	os.MkdirAll(filepath.Join(root, "c", "griz"), 0o755)
-	os.WriteFile(filepath.Join(root, "c", "griz", "config.toml"), []byte(config), 0o644)
+	if err := os.WriteFile(bin, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "c", "griz"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "c", "griz", "config.toml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	e := &env{t: t, bin: bin, tmp: tmp, vars: append(os.Environ(),
 		"XDG_CONFIG_HOME="+filepath.Join(root, "c"), "XDG_DATA_HOME="+filepath.Join(root, "d"),
 		"XDG_STATE_HOME="+filepath.Join(tmp, "s"), "TMPDIR="+tmp)}
 	t.Cleanup(func() {
 		if pid := e.serverPID(); pid > 0 {
-			syscall.Kill(pid, syscall.SIGKILL)
+			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
-		os.RemoveAll(tmp)
+		_ = os.RemoveAll(tmp)
 	})
 	return e
 }
@@ -128,10 +134,10 @@ func (e *env) session() *session {
 		e.t.Fatal(err)
 	}
 	s := &session{t: e.t, cmd: cmd, in: json.NewEncoder(stdin), out: bufio.NewReader(stdout)}
-	e.t.Cleanup(func() { stdin.Close(); cmd.Wait() })
+	e.t.Cleanup(func() { _ = stdin.Close(); _ = cmd.Wait() })
 	s.request("initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{},
 		"clientInfo": map[string]any{"name": "test", "version": "1"}})
-	s.in.Encode(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
+	_ = s.in.Encode(map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
 	return s
 }
 
@@ -151,7 +157,7 @@ type reply struct {
 func (s *session) request(method string, params any) reply {
 	s.id++
 	id := s.id
-	s.in.Encode(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+	_ = s.in.Encode(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 	for {
 		line, err := s.out.ReadBytes('\n')
 		if err != nil {
@@ -160,10 +166,10 @@ func (s *session) request(method string, params any) reply {
 		var m struct {
 			ID json.RawMessage `json:"id"`
 		}
-		json.Unmarshal(line, &m)
+		_ = json.Unmarshal(line, &m)
 		if string(m.ID) == strconv.Itoa(id) {
 			var r reply
-			json.Unmarshal(line, &r)
+			_ = json.Unmarshal(line, &r)
 			return r
 		}
 	}
@@ -234,7 +240,9 @@ func TestCrashIsLoud(t *testing.T) {
 		done <- out
 	}()
 	time.Sleep(300 * time.Millisecond)
-	syscall.Kill(pid, syscall.SIGKILL)
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
 	out := <-done
 	for _, want := range []string{"GRIZ SERVER STOPPED", fmt.Sprintf("pid %d", pid), "Tell the user now.", "can be retried"} {
 		if !strings.Contains(out, want) {
@@ -263,7 +271,9 @@ func TestCrashReportFile(t *testing.T) {
 	e := newEnv(t, noScan)
 	a := e.session()
 	pid := e.serverPID()
-	syscall.Kill(pid, syscall.SIGQUIT) // Go prints a goroutine dump and exits: a crash with output
+	if err := syscall.Kill(pid, syscall.SIGQUIT); err != nil {
+		t.Fatal(err)
+	} // Go prints a goroutine dump and exits: a crash with output
 	time.Sleep(500 * time.Millisecond)
 	out, _ := a.tool("recall", map[string]any{"q": "x"})
 	if !strings.Contains(out, "GRIZ SERVER CRASHED") || !strings.Contains(out, "SIGQUIT") {
@@ -292,8 +302,12 @@ func TestRebuiltServerHandsOver(t *testing.T) {
 	// "Rebuild": a different binary at the same path.
 	b, _ := os.ReadFile(e.bin)
 	tmp := e.bin + ".new"
-	os.WriteFile(tmp, append(b, []byte("rebuilt")...), 0o755)
-	os.Rename(tmp, e.bin)
+	if err := os.WriteFile(tmp, append(b, []byte("rebuilt")...), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, e.bin); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(2500 * time.Millisecond) // the server checks its binary every second
 	out, bad := a.tool("recall", map[string]any{"q": "okapi"})
 	if bad || strings.Contains(out, "CRASHED") || !strings.Contains(out, "notes/y") {
@@ -381,8 +395,10 @@ func TestRelativeAndSymlinkInvocation(t *testing.T) {
 	cmd.Dir, cmd.Env = dir, e.vars
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
-	cmd.Start()
-	defer func() { stdin.Close(); cmd.Wait() }()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
 	s := &session{t: t, cmd: cmd, in: json.NewEncoder(stdin), out: bufio.NewReader(stdout)}
 	r := s.request("initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{},
 		"clientInfo": map[string]any{"name": "test", "version": "1"}})
@@ -394,11 +410,15 @@ func TestRelativeAndSymlinkInvocation(t *testing.T) {
 // A refused client hears the server's reason, not a timeout.
 func TestRefusalIsExplained(t *testing.T) {
 	e := newEnv(t, noScan)
-	e.cli("memory", "gc") // start the server
+	if _, err := e.cli("memory", "gc"); err != nil {
+		t.Fatal(err)
+	} // start the server
 	// A different executable (a copy) is not "this griz".
 	other := filepath.Join(t.TempDir(), "griz")
 	b, _ := os.ReadFile(e.bin)
-	os.WriteFile(other, b, 0o755)
+	if err := os.WriteFile(other, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	start := time.Now()
 	cmd := exec.Command(other, "memory", "gc")
 	cmd.Env = e.vars
@@ -415,8 +435,8 @@ func TestRefusalIsExplained(t *testing.T) {
 func (e *env) rebuild() {
 	b, _ := os.ReadFile(e.bin)
 	tmp := e.bin + ".new"
-	os.WriteFile(tmp, append(b, []byte("rebuilt")...), 0o755)
-	os.Rename(tmp, e.bin)
+	_ = os.WriteFile(tmp, append(b, []byte("rebuilt")...), 0o755)
+	_ = os.Rename(tmp, e.bin)
 }
 
 // within runs f, failing the test if it takes longer than d.
@@ -436,8 +456,10 @@ func TestRebuildWithOpenSubscription(t *testing.T) {
 	e := newEnv(t, noScan)
 	a := e.session()
 	a.tool("store", map[string]any{"id": "notes/z", "body": "quokka"})
-	a.in.Encode(map[string]any{"jsonrpc": "2.0", "id": 9999, "method": "subscriptions/listen",
-		"params": map[string]any{"notifications": map[string]any{"toolsListChanged": true}}})
+	if err := a.in.Encode(map[string]any{"jsonrpc": "2.0", "id": 9999, "method": "subscriptions/listen",
+		"params": map[string]any{"notifications": map[string]any{"toolsListChanged": true}}}); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(300 * time.Millisecond)
 	old := e.serverPID()
 	e.rebuild()
@@ -516,7 +538,7 @@ func TestResumedSessionKeepsPinned(t *testing.T) {
 	if out, _ := b.tool("recall", map[string]any{"q": "anything"}); !strings.Contains(out, "pinned memories, sent once") {
 		t.Fatalf("a new session's first reply carries the pinned memories: %q", out)
 	}
-	if out, err := e.cli("mcp", "restart"); err != nil {
+	if out, err := e.cli("server", "restart"); err != nil {
 		t.Fatalf("restart: %v %s", err, out)
 	}
 	if out, bad := b.tool("recall", map[string]any{"q": "pinned fact"}); bad || strings.Contains(out, "pinned memories, sent once") || !strings.Contains(out, "notes/pinned") {

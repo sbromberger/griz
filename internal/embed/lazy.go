@@ -220,7 +220,7 @@ func (l *Lazy) Unload() {
 
 func (l *Lazy) unload() {
 	if c, ok := l.m.(io.Closer); ok {
-		c.Close()
+		_ = c.Close()
 	}
 	l.m = nil
 }

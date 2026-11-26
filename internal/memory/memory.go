@@ -25,7 +25,8 @@ type Memory struct {
 	Term     string // short, medium, long, infinite, or "" (none set)
 	Created  string // YYYY-MM-DD (local) or ""
 	Updated  string // YYYY-MM-DD (local) or ""
-	Expires  string // YYYY-MM-DD or ""
+	Renewed  string // YYYY-MM-DD or "": last renewed without an edit (renew, unarchive, restore, or reads)
+	Expires  string // YYYY-MM-DD or "": a hard date, set only on purpose; archived after it
 	Body     string
 }
 
@@ -41,6 +42,10 @@ func NS(path string) string {
 	}
 	return ""
 }
+
+// Since is the date its fading counts from: the latest of created, updated
+// and renewed ("" if none is set).
+func (m *Memory) Since() string { return max(m.Created, m.Updated, m.Renewed) }
 
 // IsArchived reports whether the memory counts as archived: flagged, or expired.
 func (m *Memory) IsArchived(today string) bool { return m.Archived || m.Expired(today) }
@@ -96,6 +101,7 @@ type front struct {
 	Term     string   `yaml:"term,omitempty"`
 	Created  string   `yaml:"created,omitempty"`
 	Updated  string   `yaml:"updated,omitempty"`
+	Renewed  string   `yaml:"renewed,omitempty"`
 	Expires  string   `yaml:"expires,omitempty"`
 }
 
@@ -126,7 +132,7 @@ func Parse(id string, data []byte) (*Memory, error) {
 		if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("frontmatter: %w", err)
 		}
-		for k, v := range map[string]string{"expires": f.Expires, "created": f.Created, "updated": f.Updated} {
+		for k, v := range map[string]string{"expires": f.Expires, "created": f.Created, "updated": f.Updated, "renewed": f.Renewed} {
 			if v != "" {
 				if _, err := time.Parse(DateLayout, v); err != nil {
 					return nil, fmt.Errorf("frontmatter: %s %q is not YYYY-MM-DD", k, v)
@@ -137,7 +143,7 @@ func Parse(id string, data []byte) (*Memory, error) {
 			return nil, fmt.Errorf("frontmatter: term %q is not short, medium, long or infinite", f.Term)
 		}
 		m.Tags, m.Pin, m.Archived, m.Term, m.Expires = f.Tags, f.Pin, f.Archived, f.Term, f.Expires
-		m.Created, m.Updated = f.Created, f.Updated
+		m.Created, m.Updated, m.Renewed = f.Created, f.Updated, f.Renewed
 	}
 	m.Body = strings.TrimSpace(s)
 	return m, nil
@@ -146,7 +152,7 @@ func Parse(id string, data []byte) (*Memory, error) {
 // Format renders the file contents.
 func (m *Memory) Format() []byte {
 	var b bytes.Buffer
-	if len(m.Tags) > 0 || m.Pin || m.Archived || m.Term != "" || m.Created != "" || m.Updated != "" || m.Expires != "" {
+	if len(m.Tags) > 0 || m.Pin || m.Archived || m.Term != "" || m.Created != "" || m.Updated != "" || m.Renewed != "" || m.Expires != "" {
 		b.WriteString("---\n")
 		if len(m.Tags) > 0 {
 			q := make([]string, len(m.Tags))
@@ -169,6 +175,9 @@ func (m *Memory) Format() []byte {
 		}
 		if m.Updated != "" {
 			fmt.Fprintf(&b, "updated: %s\n", m.Updated)
+		}
+		if m.Renewed != "" {
+			fmt.Fprintf(&b, "renewed: %s\n", m.Renewed)
 		}
 		if m.Expires != "" {
 			fmt.Fprintf(&b, "expires: %s\n", m.Expires)

@@ -42,9 +42,9 @@ func (l *Log) Write(e Entry) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	f.Chmod(0o600) // the log names memories: only this user may read it, even if it was made looser
-	fmt.Fprintf(f, "%s\t%s\t%d\t%d\t%d\t%s\n", e.Time.UTC().Format(time.RFC3339), e.Tool, e.In, e.Out, e.MS, strings.Join(e.IDs, ","))
+	defer func() { _ = f.Close() }()
+	_ = f.Chmod(0o600) // the log names memories: only this user may read it, even if it was made looser
+	_, _ = fmt.Fprintf(f, "%s\t%s\t%d\t%d\t%d\t%s\n", e.Time.UTC().Format(time.RFC3339), e.Tool, e.In, e.Out, e.MS, strings.Join(e.IDs, ","))
 }
 
 // Read parses the whole log. A missing log is empty.
@@ -56,7 +56,7 @@ func (l *Log) Read() ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var out []Entry
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64*1024), 1<<20)
@@ -116,7 +116,7 @@ func (l *Log) Forget(ids []string) error {
 		}
 	}
 	tmp := l.Path + ".tmp"
-	os.Remove(tmp) // WriteFile keeps the mode of a file that already exists
+	_ = os.Remove(tmp) // WriteFile keeps the mode of a file that already exists
 	if err := os.WriteFile(tmp, []byte(strings.Join(keep, "")), 0o600); err != nil {
 		return err
 	}

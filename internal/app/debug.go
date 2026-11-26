@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -18,9 +19,10 @@ import (
 // and warning delivery are per session. App.Local is the session used when
 // griz runs without a server (tests, CLI).
 type Session struct {
-	ID     int
-	Since  time.Time
-	Client string // the relay's pid ("pid 123"), set by the server
+	ID        int
+	Since     time.Time
+	Client    string // the relay's pid ("pid 123"), set by the server
+	ClientPID int    // the same pid, to match against ps
 
 	debug  atomic.Bool
 	pinned atomic.Bool // pinned memories already sent to this session
@@ -44,7 +46,7 @@ func (a *App) NewSession() *Session {
 	}
 	a.sess.next++
 	s := &Session{ID: a.sess.next, Since: time.Now()}
-	s.debug.Store(a.Local.Debugging()) // griz debug on covers sessions that connect later
+	s.debug.Store(a.Local.Debugging()) // griz server debug on covers sessions that connect later
 	a.sess.all[s] = true
 	return s
 }
@@ -72,7 +74,7 @@ func (a *App) Sessions() []*Session {
 func (a *App) SetDebug(on bool) { a.Local.SetDebug(on) }
 
 // SetDebugAll turns debug mode on or off for App.Local, every connected
-// session, and sessions that connect while it is on (griz debug on|off).
+// session, and sessions that connect while it is on (griz server debug on|off).
 func (a *App) SetDebugAll(on bool) {
 	a.Local.SetDebug(on)
 	for _, s := range a.Sessions() {
@@ -295,7 +297,7 @@ func (a *App) Timings() string {
 
 func spread(ds []time.Duration) (median, max time.Duration) {
 	s := append([]time.Duration(nil), ds...)
-	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	slices.Sort(s)
 	return s[len(s)/2], s[len(s)-1]
 }
 

@@ -28,7 +28,7 @@ func shortTmp(t *testing.T) string {
 		t.Fatal(err)
 	}
 	testState = d
-	t.Cleanup(func() { os.RemoveAll(d) })
+	t.Cleanup(func() { _ = os.RemoveAll(d) })
 	return d
 }
 
@@ -43,7 +43,7 @@ func testServer(t *testing.T) *Server {
 	a.Stderr = io.Discard
 	s := &Server{A: a, Version: "test", StateDir: cfg.StateDir, Check: CheckClient,
 		RunCLI: func(args []string, _ int, out io.Writer) error {
-			io.WriteString(out, "ran "+strings.Join(args, " "))
+			_, _ = io.WriteString(out, "ran "+strings.Join(args, " "))
 			return nil
 		}}
 	if err := s.Listen(); err != nil {
@@ -51,7 +51,7 @@ func testServer(t *testing.T) *Server {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { s.Serve(ctx); close(done) }()
+	go func() { _ = s.Serve(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 	return s
 }
@@ -63,11 +63,15 @@ func raw(t *testing.T, lines ...string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	for _, l := range lines {
-		c.Write([]byte(l))
+		if _, err := c.Write([]byte(l)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	c.SetReadDeadline(time.Now().Add(time.Second))
+	if err := c.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	b, _ := io.ReadAll(c)
 	return string(b)
 }
@@ -137,8 +141,12 @@ func TestStaleServerSaysSo(t *testing.T) {
 
 func TestSocketPermissionsChecked(t *testing.T) {
 	st := shortTmp(t)
-	os.MkdirAll(socketDir(st), 0o755)
-	os.Chmod(socketDir(st), 0o755)
+	if err := os.MkdirAll(socketDir(st), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(socketDir(st), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := ensureDir(st); err == nil || !strings.Contains(err.Error(), "REFUSING") {
 		t.Errorf("a socket dir open to others must be refused: %v", err)
 	}
@@ -148,13 +156,17 @@ func TestSocketPermissionsChecked(t *testing.T) {
 // connection when it sees a tools/call.
 func fakeServer(t *testing.T) {
 	st := shortTmp(t)
-	ensureDir(st)
+	if err := ensureDir(st); err != nil {
+		t.Fatal(err)
+	}
 	ln, err := net.Listen("unix", socketPath(st))
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Chmod(socketPath(st), 0o600)
-	t.Cleanup(func() { ln.Close() })
+	if err := os.Chmod(socketPath(st), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -162,10 +174,10 @@ func fakeServer(t *testing.T) {
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				br := bufio.NewReader(c)
-				readLine(br, maxControl)
-				writeMsg(c, msg{Griz: "hello", Proto: proto, PID: 999999, Started: time.Now().Format(time.RFC3339Nano)})
+				_, _ = readLine(br, maxControl)
+				_ = writeMsg(c, msg{Griz: "hello", Proto: proto, PID: 999999, Started: time.Now().Format(time.RFC3339Nano)})
 				for {
 					line, err := readLine(br, 1<<20)
 					if err != nil {
@@ -175,10 +187,10 @@ func fakeServer(t *testing.T) {
 						ID     json.RawMessage `json:"id"`
 						Method string          `json:"method"`
 					}
-					json.Unmarshal(line, &m)
+					_ = json.Unmarshal(line, &m)
 					switch m.Method {
 					case "initialize":
-						c.Write([]byte(`{"jsonrpc":"2.0","id":` + string(m.ID) + `,"result":{}}` + "\n"))
+						_, _ = c.Write([]byte(`{"jsonrpc":"2.0","id":` + string(m.ID) + `,"result":{}}` + "\n"))
 					case "tools/call":
 						return // crash
 					}
@@ -200,10 +212,14 @@ func TestRelayStoreOutcomeUnknown(t *testing.T) {
 	fakeServer(t)
 	pr, pw := io.Pipe()
 	out := &syncBuf{}
-	r := &Relay{Client: Client{StateDir: testState, Check: CheckServer}, In: pr, Out: out}
-	go r.Run()
-	pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n"))
-	pw.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"store","arguments":{"id":"a/b","body":"x"}}}` + "\n"))
+	r := &Relay{StateDir: testState, Check: CheckServer, In: pr, Out: out}
+	go func() { _ = r.Run() }()
+	if _, err := pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pw.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"store","arguments":{"id":"a/b","body":"x"}}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(3 * time.Second)
 	for !strings.Contains(out.String(), `"id":2`) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
@@ -214,5 +230,7 @@ func TestRelayStoreOutcomeUnknown(t *testing.T) {
 			t.Errorf("want %q in %q", want, got)
 		}
 	}
-	pw.Close()
+	if err := pw.Close(); err != nil {
+		t.Fatal(err)
+	}
 }

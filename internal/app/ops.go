@@ -3,7 +3,9 @@ package app
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,9 +15,11 @@ import (
 )
 
 type scored struct {
-	id    string
-	seq   int     // the chunk shown: best by chunk-level fused score
-	score float64 // memory-level fused score
+	id     string
+	seq    int             // the chunk shown: best by chunk-level fused score
+	weight float64         // fading (1: none)
+	chunks map[int]float64 // every matching chunk's score (faded), by seq: recall may show more than one
+	score  float64         // memory-level fused score
 	// Memory-level place in each list (0 = not in it), the score of the
 	// memory's best chunk there, and which chunk that was. For explain.
 	kwRank  int
@@ -78,7 +82,7 @@ func (a *App) rank(q string, f index.Filter, op *Op) ranking {
 			kw = append(kw, h)
 		}
 	}
-	t = op.Since("keyword", t)
+	op.Since("keyword", t)
 	rk.kwHits = len(kw)
 	// Each list collapses to memories, ranked by their best chunk in it.
 	n := 0
@@ -136,13 +140,21 @@ func (a *App) rank(q string, f index.Filter, op *Op) ranking {
 		}
 		return s
 	}
+	// Fading multiplies the blend, after normalization: each memory by its own
+	// weight, leaving the balance between the two searches alone.
+	today := memory.Today()
 	for _, m := range mems {
-		m.score = blend(m.kwScore, m.vecSim)
+		m.weight = a.weight(m.id, today)
+		m.score = m.weight * blend(m.kwScore, m.vecSim)
 	}
 	best := map[string]float64{}
 	pick := func(c ck) {
 		m := mems[c.id]
 		sc := blend(kwChunk[c], vecChunk[c])
+		if m.chunks == nil {
+			m.chunks = map[int]float64{}
+		}
+		m.chunks[c.seq] = m.weight * sc
 		if b, ok := best[c.id]; !ok || sc > b || (sc == b && c.seq < m.seq) {
 			best[c.id], m.seq = sc, c.seq
 		}
@@ -174,7 +186,7 @@ func (a *App) rank(q string, f index.Filter, op *Op) ranking {
 // to count, or a model that can't count tokens, meaning alone decides.
 func (a *App) keywordWeight(q string) float64 {
 	var tokens, words int
-	for _, w := range strings.Fields(q) {
+	for w := range strings.FieldsSeq(q) {
 		w = strings.Trim(w, `?!.,;:"()[]{}`)
 		w = strings.TrimSuffix(strings.TrimSuffix(w, "'s"), "’s")
 		if len(index.Terms(w)) == 0 {
@@ -266,35 +278,101 @@ func (a *App) RecallOp(op *Op, q string, budget int, withArchived bool) (string,
 	var b strings.Builder
 	var full, more []string
 	used := 0
-	for _, r := range results {
-		if len(full) >= a.Cfg.Recall.FullResults {
+	// The first full_results memories are candidates; the rest go to "more:".
+	cands := results
+	if len(cands) > a.Cfg.Recall.FullResults {
+		for _, r := range cands[a.Cfg.Recall.FullResults:] {
 			more = append(more, r.id)
-			continue
 		}
+		cands = cands[:a.Cfg.Recall.FullResults]
+	}
+	// What recall can show, in pieces: each candidate's best chunk (or its
+	// whole text, if short), plus any other chunk of a long memory scoring
+	// above the weakest candidate. Pieces are taken best first while the
+	// budget lasts, so a strong second section of one memory can come before
+	// another memory's best chunk.
+	type entry struct {
+		m     *memory.Memory
+		parts []string // chunks, for a long memory (nil: shown whole)
+		shown []int    // seqs taken
+		cut   string
+	}
+	type piece struct {
+		e     *entry
+		seq   int // -1: the whole text
+		score float64
+		best  bool
+	}
+	var entries []*entry
+	var pieces []piece
+	lowest := 0.0
+	if len(cands) > 0 {
+		lowest = cands[len(cands)-1].score
+	}
+	for _, r := range cands {
 		m, err := a.Repo.Read(r.id)
 		if err != nil {
 			continue
 		}
-		var notes []string
-		text := m.Body
-		if memory.Words(m.Body) > a.Cfg.Recall.ExcerptWords {
-			parts := a.chunk(m.Body)
-			if r.seq < len(parts) {
-				text = parts[r.seq]
+		e := &entry{m: m}
+		entries = append(entries, e)
+		if memory.Words(m.Body) <= a.Cfg.Recall.ExcerptWords {
+			pieces = append(pieces, piece{e, -1, r.score, true})
+			continue
+		}
+		e.parts = a.chunk(m.Body)
+		seq := min(r.seq, len(e.parts)-1)
+		pieces = append(pieces, piece{e, seq, r.score, true})
+		for s, sc := range r.chunks {
+			if s != seq && s < len(e.parts) && sc > lowest {
+				pieces = append(pieces, piece{e, s, sc, false})
 			}
-			notes = append(notes, fmt.Sprintf("%d of %d", r.seq+1, len(parts)))
 		}
-		if m.Updated != "" {
-			notes = append(notes, "updated "+m.Updated)
+	}
+	sort.SliceStable(pieces, func(i, j int) bool { return pieces[i].score > pieces[j].score })
+	header := func(e *entry) string {
+		var notes []string
+		if e.parts != nil {
+			seqs := slices.Clone(e.shown)
+			slices.Sort(seqs)
+			nums := make([]string, len(seqs))
+			for i, s := range seqs {
+				nums[i] = strconv.Itoa(s + 1)
+			}
+			notes = append(notes, strings.Join(nums, ", ")+" of "+strconv.Itoa(len(e.parts)))
 		}
-		head := "### " + m.Label()
+		if e.m.Updated != "" {
+			notes = append(notes, "updated "+e.m.Updated)
+		}
+		if s := a.since(e.m.ID); s > e.m.Updated {
+			notes = append(notes, "renewed "+s)
+		}
+		h := "### " + e.m.Label()
 		if len(notes) > 0 {
-			head += " (" + strings.Join(notes, ", ") + ")"
+			h += " (" + strings.Join(notes, ", ") + ")"
 		}
-		entry := head + "\n" + memory.Display(text) + "\n\n"
-		if used+Tokens(entry) > budget {
-			if len(full) > 0 {
-				more = append(more, r.id)
+		return h + "\n"
+	}
+	text := func(e *entry, seq int) string {
+		if seq < 0 {
+			return e.m.Body
+		}
+		return e.parts[seq]
+	}
+	for _, p := range pieces {
+		e := p.e
+		if !p.best && len(e.shown) == 0 && e.cut == "" {
+			continue // its memory didn't fit
+		}
+		cost := Tokens(memory.Display(text(e, p.seq)) + "\n\n…\n\n")
+		if p.best {
+			cost = Tokens(header(e) + memory.Display(text(e, p.seq)) + "\n\n")
+		}
+		if used+cost > budget {
+			if !p.best || len(full) > 0 {
+				if p.best {
+					more = append(more, e.m.ID)
+				}
 				continue
 			}
 			// The best match always shows, cut to fit, leaving room for a
@@ -303,11 +381,44 @@ func (a *App) RecallOp(op *Op, q string, budget int, withArchived bool) (string,
 			if len(all) > 1 {
 				room -= min(a.Cfg.Recall.MoreReserve, budget/4)
 			}
-			entry = truncate(entry, room*4-8) + " ...\n\n"
+			e.shown = append(e.shown, max(p.seq, 0))
+			e.cut = truncate(header(e)+memory.Display(text(e, p.seq))+"\n\n", room*4-8) + " ...\n\n"
+			used += Tokens(e.cut)
+			full = append(full, e.m.ID)
+			continue
 		}
-		b.WriteString(entry)
-		used += Tokens(entry)
-		full = append(full, r.id)
+		e.shown = append(e.shown, max(p.seq, 0))
+		used += cost
+		if p.best {
+			full = append(full, e.m.ID)
+		}
+	}
+	// Shown in rank order; a memory's chunks in the order they appear in it.
+	for _, e := range entries {
+		switch {
+		case e.cut != "":
+			b.WriteString(e.cut)
+		case len(e.shown) == 0:
+		case e.parts == nil:
+			b.WriteString(header(e))
+			b.WriteString(memory.Display(e.m.Body))
+			b.WriteString("\n\n")
+		default:
+			seqs := slices.Clone(e.shown)
+			slices.Sort(seqs)
+			b.WriteString(header(e))
+			for i, s := range seqs {
+				if i > 0 {
+					if s == seqs[i-1]+1 {
+						b.WriteString("\n\n")
+					} else {
+						b.WriteString("\n\n…\n\n")
+					}
+				}
+				b.WriteString(memory.Display(e.parts[s]))
+			}
+			b.WriteString("\n\n")
+		}
 	}
 	used = a.idLine(&b, "more:", more, a.Cfg.Recall.IDResults, used, budget)
 	a.idLine(&b, "archived:", archived, a.Cfg.Recall.ArchivedResults, used, budget)
@@ -318,31 +429,33 @@ func (a *App) RecallOp(op *Op, q string, budget int, withArchived bool) (string,
 	return out + note, full, nil
 }
 
-// idLine writes "label id, id, ..." with up to max ids that fit the budget,
-// and returns the tokens used so far.
-// idLine writes "label: path [id], ..." for as many ids as fit the budget.
+// idLine writes "label path [id], path [id], ..." with up to max ids that
+// fit the budget, and returns the tokens used so far.
 func (a *App) idLine(b *strings.Builder, label string, ids []string, max, used, budget int) int {
 	if len(ids) > max {
 		ids = ids[:max]
 	}
-	line := label
+	var line strings.Builder
+	line.WriteString(label)
 	n := 0
 	for _, id := range ids {
 		id := a.label(id)
-		if used+Tokens(line+" "+id+",") > budget {
+		if used+tokensOf(line.Len()+len(id)+2) > budget {
 			break
 		}
 		if n > 0 {
-			line += ","
+			line.WriteByte(',')
 		}
-		line += " " + id
+		line.WriteByte(' ')
+		line.WriteString(id)
 		n++
 	}
 	if n == 0 {
 		return used
 	}
-	b.WriteString(line + "\n")
-	return used + Tokens(line+"\n")
+	line.WriteByte('\n')
+	b.WriteString(line.String())
+	return used + tokensOf(line.Len())
 }
 
 // truncate cuts s to at most n bytes at a word boundary.
@@ -427,6 +540,7 @@ func (a *App) Get(ids []string) (string, []string) {
 		}
 		parts = append(parts, "### "+m.Label()+"\n"+memory.Display(m.Body))
 		found = append(found, id)
+		a.renewOnGet(id)
 	}
 	if len(parts) == 0 {
 		return "no id given", nil
@@ -448,6 +562,13 @@ type StoreArgs struct {
 	Pin      *bool    `json:"pin"`
 	Term     *string  `json:"term"`
 	Append   *string  `json:"append"`
+	Move     *string  `json:"move"`
+	All      bool     `json:"all"`     // old/new: replace every copy, not just a unique one
+	Preview  bool     `json:"preview"` // old/new: show what would change, write nothing
+	Count    *int     `json:"count"`   // old/new: refuse unless this many copies are replaced
+	// Renew restarts the memory's fading today (griz memory renew; not an
+	// MCP argument: Claude renews by reading).
+	Renew bool `json:"-"`
 }
 
 // Store creates, replaces or edits a memory. The reply is "ok <id>",
@@ -462,6 +583,12 @@ func (a *App) StoreOp(op *Op, s StoreArgs) (string, error) {
 	}
 	edit := s.Old != nil || s.New != nil
 	appendText := s.Append != nil
+	if s.Move != nil {
+		if edit || appendText || s.Body != nil || s.Tags != nil || s.Term != nil || s.Expires != nil || s.Archived != nil || s.Pin != nil || s.Force || s.Renew {
+			return "", fmt.Errorf("give move alone (with new_ns for a new folder)")
+		}
+		return a.moveOp(op, key, *s.Move, s.NewNS)
+	}
 	switch {
 	case appendText && (edit || s.Body != nil):
 		return "", fmt.Errorf("give append alone, without body or old and new")
@@ -473,10 +600,28 @@ func (a *App) StoreOp(op *Op, s StoreArgs) (string, error) {
 		return "", fmt.Errorf("old and new go together")
 	case edit && *s.Old == "":
 		return "", fmt.Errorf("old is empty")
-	case !edit && !appendText && s.Body == nil && s.Archived == nil && s.Pin == nil && s.Term == nil && s.Expires == nil && s.Tags == nil:
+	case !edit && (s.All || s.Preview || s.Count != nil):
+		return "", fmt.Errorf("all, preview and count go with old and new")
+	case !edit && !appendText && s.Body == nil && s.Archived == nil && s.Pin == nil && s.Term == nil && s.Expires == nil && s.Tags == nil && !s.Renew:
 		return "", fmt.Errorf("body is required")
 	case !edit && s.Body != nil && strings.TrimSpace(*s.Body) == "":
 		return "", fmt.Errorf("body is empty")
+	case s.Preview && (s.Tags != nil || s.Term != nil || s.Expires != nil || s.Archived != nil || s.Pin != nil):
+		return "", fmt.Errorf("preview shows only what old and new would change; give the other changes without it")
+	}
+	if s.Preview {
+		id, _, err := a.storeTarget(key)
+		if err != nil {
+			return "", err
+		}
+		if id == "" {
+			return "", fmt.Errorf("not found: %s", key)
+		}
+		m, err := a.Repo.Read(id)
+		if err != nil {
+			return "", err
+		}
+		return previewEdit(m, *s.Old, *s.New, s.All, a.Cfg.Recall.Budget)
 	}
 	flagOnly := !edit && !appendText && s.Body == nil // only setting archived, pin, term, tags or expires
 	now := time.Now()
@@ -496,7 +641,8 @@ func (a *App) StoreOp(op *Op, s StoreArgs) (string, error) {
 		return "", fmt.Errorf("term %q: want short, medium, long or infinite", *s.Term)
 	}
 	tags := cleanTags(s.Tags)
-	var reply, id string
+	var reply, id, note string
+	replaced := 0
 	tw := time.Now()
 	err := a.write(func() error {
 		var m *memory.Memory
@@ -517,6 +663,8 @@ func (a *App) StoreOp(op *Op, s StoreArgs) (string, error) {
 			case appendText:
 				verb = "append"
 				m.Body = strings.TrimRight(m.Body, "\n") + "\n\n" + entryLine
+			case flagOnly && s.Renew && s.Archived == nil && s.Pin == nil && s.Term == nil && s.Expires == nil && s.Tags == nil:
+				verb = "renew"
 			case flagOnly && s.Archived != nil:
 				verb = "archive"
 				if !*s.Archived {
@@ -531,13 +679,13 @@ func (a *App) StoreOp(op *Op, s StoreArgs) (string, error) {
 				verb = "set"
 			case edit:
 				verb = "edit"
-				switch n := strings.Count(m.Body, *s.Old); n {
-				case 0:
-					return fmt.Errorf("old text not found in %s", m.Label())
-				case 1:
-					m.Body = strings.Replace(m.Body, *s.Old, *s.New, 1)
-				default:
-					return fmt.Errorf("old text matches %d times in %s; give more of it", n, m.Label())
+				body, n, err := replaceText(m, *s.Old, *s.New, s.All, s.Count)
+				if err != nil {
+					return err
+				}
+				m.Body = body
+				if s.All {
+					replaced = n
 				}
 			default:
 				m.Body = *s.Body
@@ -576,29 +724,29 @@ func (a *App) StoreOp(op *Op, s StoreArgs) (string, error) {
 		if s.Pin != nil {
 			m.Pin = *s.Pin
 		}
-		// Every content write (and any term change) restarts the term's clock;
-		// an explicit expires overrides the term's date for this write.
+		// A content write sets updated; renew, a term change and unarchive renew
+		// the memory without an edit. None of them touches the hard date.
+		today := now.Format(memory.DateLayout)
 		if !flagOnly {
-			m.Updated = now.Format(memory.DateLayout)
+			m.Updated = today
 		}
-		if !flagOnly || s.Term != nil {
-			switch {
-			case s.Term != nil:
-				m.Term = *s.Term
-			case m.Term == "":
-				m.Term = a.Cfg.Store.DefaultTerm
-			}
-			if exp == nil {
-				m.Expires = a.termExpiry(m.Term, now)
-			}
+		switch {
+		case s.Term != nil:
+			m.Term = *s.Term
+		case m.Term == "" && !flagOnly:
+			m.Term = a.Cfg.Store.DefaultTerm
+		}
+		if flagOnly && (s.Renew || s.Term != nil || (s.Archived != nil && !*s.Archived)) && today > m.Updated {
+			m.Renewed = today
 		}
 		if exp != nil {
 			m.Expires = *exp
 		}
 		if s.Archived != nil {
 			m.Archived = *s.Archived
-			if !m.Archived && m.Expired(memory.Today()) {
-				return fmt.Errorf("%s expired on %s; to unarchive it pass expires (a new date, or none)", m.Label(), m.Expires)
+			if !m.Archived && exp == nil && m.Expired(today) {
+				note = fmt.Sprintf(" (its date %s had passed; cleared)", m.Expires)
+				m.Expires = ""
 			}
 		}
 		if strings.TrimSpace(m.Body) == "" {
@@ -608,7 +756,10 @@ func (a *App) StoreOp(op *Op, s StoreArgs) (string, error) {
 			return err
 		}
 		a.indexed(m)
-		reply = "ok " + m.Label()
+		reply = "ok " + m.Label() + note
+		if replaced > 0 {
+			reply += fmt.Sprintf(" (replaced %d)", replaced)
+		}
 		return nil
 	})
 	if err != nil {
@@ -624,6 +775,72 @@ func (a *App) StoreOp(op *Op, s StoreArgs) (string, error) {
 		}
 		a.embedAsync(sess, "store", id)
 	}
+	return reply, nil
+}
+
+// moveOp moves the memory key names to target, like mv: an existing folder
+// (or any target ending in "/") receives it under its own slug; otherwise
+// target is its new ns/slug. The id, file contents and history stay.
+func (a *App) moveOp(op *Op, key, target string, newNS bool) (string, error) {
+	target = strings.TrimSuffix(strings.TrimSpace(target), ".md")
+	if strings.Trim(target, "/") == "" {
+		return "", fmt.Errorf("move needs a folder or a path (ns/slug)")
+	}
+	var reply, id string
+	tw := time.Now()
+	err := a.write(func() error {
+		var err error
+		if id, _, err = a.storeTarget(key); err != nil {
+			return err
+		}
+		if id == "" {
+			return fmt.Errorf("not found: %s", key)
+		}
+		m, err := a.Repo.Read(id)
+		if err != nil {
+			return err
+		}
+		from := m.Path
+		to := target
+		if folder := strings.Trim(target, "/"); strings.HasSuffix(target, "/") || a.folders()[folder] > 0 {
+			to = folder + "/" + from[strings.LastIndex(from, "/")+1:]
+		}
+		if err := memory.ValidPath(to); err != nil {
+			return err
+		}
+		if to == from {
+			return fmt.Errorf("%s is already at %s", m.Label(), to)
+		}
+		if other, err := a.Repo.Lookup(to); err == nil {
+			return fmt.Errorf("%s is taken by %s", to, a.label(other))
+		}
+		if nf := a.newFolder(memory.NS(to)); nf != "" && !newNS && a.Cfg.Store.NewNSGuard {
+			return fmt.Errorf("new folder %q; pass new_ns: true", nf)
+		}
+		m.Path = to
+		if err := a.Repo.Write(m, fmt.Sprintf("move %s → %s [%s]", from, to, id)); err != nil {
+			return err
+		}
+		a.indexed(m)
+		reply = fmt.Sprintf("moved %s: %s → %s", id, from, to)
+		switch was, is := a.inStartup(from), a.inStartup(to); {
+		case is && !was:
+			reply += "\nnow in the startup folder: new sessions load it; running ones don't"
+		case was && !is:
+			reply += "\nleft the startup folder: new sessions no longer load it; running ones keep it"
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	op.Since("move and commit", tw)
+	// The path is part of what is embedded, so the chunks are embedded again.
+	var sess *Session
+	if op != nil {
+		sess = op.Sess
+	}
+	a.embedAsync(sess, "move", id)
 	return reply, nil
 }
 

@@ -68,7 +68,7 @@ func runRecall(args []string) error {
 		return err
 	}
 	if len(words) == 0 && !*pinned {
-		return usageErr("recall")
+		return usageErr("memory recall")
 	}
 	a, err := open()
 	if err != nil {
@@ -89,7 +89,7 @@ func runRecall(args []string) error {
 	if *tty {
 		text = bold(a, text)
 	}
-	fmt.Fprintln(out, text)
+	_, _ = fmt.Fprintln(out, text)
 	return nil
 }
 
@@ -101,7 +101,7 @@ func runGet(args []string) error {
 		return err
 	}
 	if len(keys) == 0 {
-		return usageErr("get")
+		return usageErr("memory get")
 	}
 	a, err := open()
 	if err != nil {
@@ -114,7 +114,7 @@ func runGet(args []string) error {
 	if *tty {
 		text = bold(a, text)
 	}
-	fmt.Fprintln(out, text)
+	_, _ = fmt.Fprintln(out, text)
 	return nil
 }
 
@@ -166,12 +166,15 @@ func runStore(args []string) error {
 	archived, pin := fs.Bool("archived", false, ""), fs.Bool("pin", false, "")
 	fs.BoolVar(&s.Force, "force", false, "")
 	fs.BoolVar(&s.NewNS, "new-ns", false, "")
+	fs.BoolVar(&s.All, "all", false, "")
+	fs.BoolVar(&s.Preview, "preview", false, "")
+	count := fs.Int("count", 0, "")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 {
-		return usageErr("store")
+		return usageErr("memory store")
 	}
 	s.ID = pos[0]
 	fs.Visit(func(f *flag.Flag) {
@@ -186,7 +189,7 @@ func runStore(args []string) error {
 			s.New = nw
 		case "tags":
 			s.Tags = []string{}
-			for _, t := range strings.Split(*tags, ",") {
+			for t := range strings.SplitSeq(*tags, ",") {
 				if t = strings.TrimSpace(t); t != "" {
 					s.Tags = append(s.Tags, t)
 				}
@@ -199,6 +202,8 @@ func runStore(args []string) error {
 			s.Archived = archived
 		case "pin":
 			s.Pin = pin
+		case "count":
+			s.Count = count
 		}
 	})
 	a, err := open()
@@ -214,60 +219,121 @@ func runStore(args []string) error {
 	if strings.HasPrefix(reply, "similar:") {
 		reply += "\nnot saved; --force saves it anyway"
 	}
-	fmt.Fprintln(out, reply)
+	_, _ = fmt.Fprintln(out, reply)
 	return nil
 }
 
 func runDelete(args []string) error {
-	if len(args) != 1 {
-		return usageErr("delete")
+	if len(args) == 0 {
+		return usageErr("memory delete")
 	}
 	a, err := open()
 	if err != nil {
 		return err
 	}
-	id, err := a.Resolve(args[0])
+	ids, err := resolveAll(a, args)
 	if err != nil {
 		return err
 	}
-	reply, err := a.Delete(id)
-	if err != nil {
-		return err
+	for _, id := range ids {
+		reply, err := a.Delete(id)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintln(out, reply)
 	}
-	fmt.Fprintln(out, reply)
 	return nil
+}
+
+// resolveAll resolves every key before anything changes, so a typo in the
+// third key doesn't leave the first two done.
+func resolveAll(a *app.App, keys []string) ([]string, error) {
+	ids := make([]string, len(keys))
+	for i, k := range keys {
+		if strings.HasPrefix(k, "-") {
+			return nil, fmt.Errorf("unknown flag %s", k)
+		}
+		id, err := a.Resolve(k)
+		if err != nil {
+			return nil, err
+		}
+		ids[i] = id
+	}
+	return ids, nil
+}
+
+// storeEach runs one store change on each memory named in args, after
+// resolving them all. With lead, the first argument is the value the change
+// takes (a term, a date) rather than a memory.
+func storeEach(name string, args []string, lead bool, change func(value, id string) app.StoreArgs) error {
+	value := ""
+	if lead && len(args) > 0 {
+		value, args = args[0], args[1:]
+	}
+	if len(args) == 0 {
+		return usageErr(name)
+	}
+	a, err := open()
+	if err != nil {
+		return err
+	}
+	ids, err := resolveAll(a, args)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		reply, err := a.Store(change(value, id))
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintln(out, reply)
+	}
+	return nil
+}
+
+func runPin(args []string, pin bool) error {
+	name := map[bool]string{true: "memory pin", false: "memory unpin"}[pin]
+	return storeEach(name, args, false, func(_, id string) app.StoreArgs { return app.StoreArgs{ID: id, Pin: &pin} })
+}
+
+func runArchive(args []string, archive bool) error {
+	name := map[bool]string{true: "memory archive", false: "memory unarchive"}[archive]
+	return storeEach(name, args, false, func(_, id string) app.StoreArgs { return app.StoreArgs{ID: id, Archived: &archive} })
+}
+
+func runTerm(args []string) error {
+	return storeEach("memory term", args, true, func(t, id string) app.StoreArgs { return app.StoreArgs{ID: id, Term: &t} })
+}
+
+func runExpire(args []string) error {
+	return storeEach("memory expire", args, true, func(d, id string) app.StoreArgs { return app.StoreArgs{ID: id, Expires: &d} })
+}
+
+func runRenew(args []string) error {
+	return storeEach("memory renew", args, false, func(_, id string) app.StoreArgs { return app.StoreArgs{ID: id, Renew: true} })
 }
 
 // ---- memory ----
 
-func runTerm(args []string) error {
-	fs := flag.NewFlagSet("term", flag.ContinueOnError)
-	expires := fs.String("expires", "", "")
+func runMove(args []string) error {
+	fs := flag.NewFlagSet("move", flag.ContinueOnError)
+	newNS := fs.Bool("new-ns", false, "")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
-	if len(pos) < 2 {
-		return usageErr("memory term")
+	if len(pos) != 2 {
+		return usageErr("memory move")
 	}
 	a, err := open()
 	if err != nil {
 		return err
 	}
-	term := pos[0]
-	for _, key := range pos[1:] {
-		id, err := a.Resolve(key)
-		if err != nil {
-			return err
-		}
-		s := app.StoreArgs{ID: id, Term: &term}
-		fs.Visit(func(f *flag.Flag) { s.Expires = expires })
-		reply, err := a.Store(s)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(out, reply)
+	reply, err := a.Store(app.StoreArgs{ID: pos[0], Move: &pos[1], NewNS: *newNS})
+	if err != nil {
+		return err
 	}
+	_, _ = fmt.Fprintln(out, reply)
 	return nil
 }
 
@@ -293,7 +359,7 @@ func runMemoryEdit([]string) error {
 	if err := edit(cfg.DataDir, cfg.DataDir); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "the griz server commits your changes once they have been unchanged for %s\n", cfg.Scan.Settle)
+	_, _ = fmt.Fprintf(out, "the griz server commits your changes once they have been unchanged for %s\n", cfg.Scan.Settle)
 	return nil
 }
 
@@ -313,7 +379,7 @@ func runConfigEdit([]string) error {
 	if _, err := config.Load(); err != nil {
 		return fmt.Errorf("the config has a problem: %v", err)
 	}
-	fmt.Fprintln(out, "config ok; griz mcp restart puts it into effect")
+	_, _ = fmt.Fprintln(out, "config ok; griz server restart puts it into effect")
 	return nil
 }
 
@@ -338,43 +404,47 @@ func runEnv([]string) error {
 		{"model", model},
 		{"state", cfg.StateDir},
 	} {
-		fmt.Fprintf(out, "%-8s %s\n", l[0], l[1])
+		_, _ = fmt.Fprintf(out, "%-8s %s\n", l[0], l[1])
 	}
 	if ents, err := os.ReadDir(cfg.StateDir); err == nil {
 		for _, e := range ents {
-			fmt.Fprintf(out, "%-8s %s\n", "", filepath.Join(cfg.StateDir, e.Name()))
+			_, _ = fmt.Fprintf(out, "%-8s %s\n", "", filepath.Join(cfg.StateDir, e.Name()))
 		}
 	}
-	fmt.Fprintf(out, "%-8s %s\n", "socket", daemon.SocketPath(cfg.StateDir))
+	_, _ = fmt.Fprintf(out, "%-8s %s\n", "socket", daemon.SocketPath(cfg.StateDir))
 	for _, v := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "VISUAL", "EDITOR", "NO_COLOR"} {
 		if s, ok := os.LookupEnv(v); ok {
-			fmt.Fprintf(out, "$%s=%s\n", v, s)
+			_, _ = fmt.Fprintf(out, "$%s=%s\n", v, s)
 		}
 	}
 	return nil
 }
 
-func runDebug(on bool) error {
+func runDebug(args []string) error {
+	if len(args) != 1 || (args[0] != "on" && args[0] != "off") {
+		return usageErr("server debug")
+	}
+	on := args[0] == "on"
 	a, err := open()
 	if err != nil {
 		return err
 	}
 	a.SetDebugAll(on)
 	if !on {
-		fmt.Fprintln(out, "debug mode off")
+		_, _ = fmt.Fprintln(out, "debug mode off")
 		return nil
 	}
 	n := len(a.Sessions())
-	fmt.Fprintf(out, "debug mode on for %d connected %s, new ones, and griz commands, until griz debug off or the server exits\n",
+	_, _ = fmt.Fprintf(out, "debug mode on for %d connected %s, new ones, and griz commands, until griz server debug off or the server exits\n",
 		n, map[bool]string{true: "session", false: "sessions"}[n == 1])
 	return nil
 }
 
 func runTimings([]string) error {
 	if srvApp == nil {
-		fmt.Fprintln(out, "no griz server running; timings live in the server")
+		_, _ = fmt.Fprintln(out, "no griz server running; timings live in the server")
 		return nil
 	}
-	fmt.Fprintln(out, srvApp.Timings())
+	_, _ = fmt.Fprintln(out, srvApp.Timings())
 	return nil
 }

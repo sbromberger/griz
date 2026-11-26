@@ -57,8 +57,12 @@ func TestFileNames(t *testing.T) {
 
 	// A hand move to another folder and slug keeps the id.
 	moved := filepath.Join(r.Dir, "other/renamed."+m.ID+".md")
-	os.MkdirAll(filepath.Dir(moved), 0o755)
-	os.Rename(dotted, moved)
+	if err := os.MkdirAll(filepath.Dir(moved), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(dotted, moved); err != nil {
+		t.Fatal(err)
+	}
 	got, err := r.Read(m.ID)
 	if err != nil || got.Path != "other/renamed" {
 		t.Fatalf("after hand move: %+v %v", got, err)
@@ -77,7 +81,9 @@ func TestFileNames(t *testing.T) {
 	}
 
 	// A file added by hand gets an id.
-	os.WriteFile(filepath.Join(r.Dir, "ns/new.md"), []byte("by hand\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(r.Dir, "ns/new.md"), []byte("by hand\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	ids, err := r.AssignIDs(0)
 	if err != nil || len(ids) != 1 || !exists(filepath.Join(r.Dir, "ns/new."+ids[0]+".md")) {
 		t.Fatalf("assign: %v %v", ids, err)
@@ -85,13 +91,21 @@ func TestFileNames(t *testing.T) {
 
 	// Two files with one id: broken until one goes.
 	cp := filepath.Join(r.Dir, "ns/copy."+ids[0]+".md")
-	os.WriteFile(cp, []byte("copy\n"), 0o644)
-	r.scan()
+	if err := os.WriteFile(cp, []byte("copy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.scan(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := r.Read(ids[0]); err == nil || !strings.Contains(err.Error(), "carry this id") {
 		t.Errorf("duplicate id: %v", err)
 	}
-	os.Remove(cp)
-	r.scan()
+	if err := os.Remove(cp); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.scan(); err != nil {
+		t.Fatal(err)
+	}
 
 	// Deleted memories can be found by id, for restore.
 	if err := r.Remove([]string{m.ID}, "delete"); err != nil {

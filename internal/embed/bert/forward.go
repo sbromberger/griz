@@ -73,8 +73,8 @@ func (m *Model) embedOne(ids []int, par int) []float32 {
 	if m.pooling == "cls" {
 		copy(vec, x[:H])
 	} else {
-		for i := 0; i < n; i++ {
-			for j := 0; j < H; j++ {
+		for i := range n {
+			for j := range H {
 				vec[j] += x[i*H+j]
 			}
 		}
@@ -114,7 +114,7 @@ func (m *Model) layer(L *layer, s *scratch, n, par int) {
 	parallel(heads, par, func(h int) {
 		scores := s.scores[h*n : (h+1)*n]
 		off := h * dh
-		for i := 0; i < n; i++ {
+		for i := range n {
 			qi := q[i*H+off : i*H+off+dh]
 			kj := func(j int) []float32 { return k[j*H+off : j*H+off+dh] }
 			j := 0
@@ -137,7 +137,7 @@ func (m *Model) layer(L *layer, s *scratch, n, par int) {
 			}
 			ci := ctx[i*H+off : i*H+off+dh]
 			inv := 1 / sum
-			for j := 0; j < n; j++ {
+			for j := range n {
 				axpy(scores[j]*inv, v[j*H+off:j*H+off+dh], ci)
 			}
 		}
@@ -161,7 +161,7 @@ func (m *Model) layer(L *layer, s *scratch, n, par int) {
 
 func (m *Model) layerNorm(x []float32, n int, ln layerNorm) {
 	H := m.hidden
-	for i := 0; i < n; i++ {
+	for i := range n {
 		row := x[i*H : (i+1)*H]
 		var mean float64
 		for _, v := range row {
@@ -214,19 +214,19 @@ var workers = runtime.GOMAXPROCS(0)
 func parallel(n, par int, fn func(int)) {
 	w := min(par, n)
 	if w <= 1 {
-		for i := 0; i < n; i++ {
+		for i := range n {
 			fn(i)
 		}
 		return
 	}
 	var wg sync.WaitGroup
 	next := make(chan int, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		next <- i
 	}
 	close(next)
 	wg.Add(w)
-	for g := 0; g < w; g++ {
+	for range w {
 		go func() {
 			defer wg.Done()
 			for i := range next {

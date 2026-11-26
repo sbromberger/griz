@@ -11,7 +11,9 @@ func TestPinWarningsFollowWrites(t *testing.T) {
 	a := newApp(t, t.TempDir())
 	a.Cfg.Store.NewNSGuard = false
 	a.Cfg.Pin.StartupWarnChars = 400 // the empty block (rules only) is about 260
-	a.RefreshPinWarnings()           // the server starts on an empty store
+	if err := a.RefreshPinWarnings(); err != nil {
+		t.Fatal(err)
+	} // the server starts on an empty store
 	if !strings.Contains(a.Report(), "warnings: none") {
 		t.Fatalf("empty store: no warnings:\n%s", a.Report())
 	}
@@ -47,7 +49,9 @@ func TestStorePin(t *testing.T) {
 	a := newApp(t, t.TempDir())
 	a.Cfg.Store.NewNSGuard = false
 	a.Cfg.Pin.WarnTokens = 50
-	a.RefreshPinWarnings()
+	if err := a.RefreshPinWarnings(); err != nil {
+		t.Fatal(err)
+	}
 	body := strings.Repeat("a fact to keep in view ", 20)
 	if _, err := a.Store(StoreArgs{ID: "notes/fact", Body: &body}); err != nil {
 		t.Fatal(err)

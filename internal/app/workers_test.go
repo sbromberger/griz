@@ -48,10 +48,14 @@ func peakApp(t *testing.T, workers int) (*App, *atomic.Int64) {
 	cfg := config.Defaults()
 	cfg.DataDir, cfg.StateDir, cfg.Search.Model = filepath.Join(root, "d"), filepath.Join(root, "s"), "fake"
 	cfg.Search.EmbedWorkers = workers
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		p := filepath.Join(cfg.DataDir, testName(fmt.Sprintf("bulk/m%02d", i)))
-		os.MkdirAll(filepath.Dir(p), 0o755)
-		os.WriteFile(p, (&memory.Memory{ID: fmt.Sprintf("bulk/m%02d", i), Body: fmt.Sprintf("memory %d", i)}).Format(), 0o644)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, (&memory.Memory{ID: fmt.Sprintf("bulk/m%02d", i), Body: fmt.Sprintf("memory %d", i)}).Format(), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	a, err := Open(&cfg)
 	if err != nil {
@@ -88,7 +92,7 @@ func TestEmbedWorkersAboveCPUsIsANote(t *testing.T) {
 	if !strings.Contains(r, fmt.Sprintf("embedding workers: %d at once", over)) || !strings.Contains(r, "note: more than") {
 		t.Errorf("status should note the setting: %s", r)
 	}
-	if w := strings.SplitN(strings.SplitN(r, "warnings:", 2)[1], "\n", 2)[0]; strings.TrimSpace(w) != "none" {
+	if w, _, _ := strings.Cut(strings.SplitN(r, "warnings:", 2)[1], "\n"); strings.TrimSpace(w) != "none" {
 		t.Errorf("above GOMAXPROCS is a note, not a warning: warnings:%s", w)
 	}
 }
